@@ -222,6 +222,26 @@ pub fn fetch_cached_with(
     http: &dyn HttpGet,
     cache_dir: &Path,
 ) -> Result<CatalogFetch, CatalogError> {
+    let result = fetch_cached_with_inner(http, cache_dir);
+    match &result {
+        Ok(fetch) => match &fetch.source {
+            FetchSource::Fresh => {
+                tracing::info!(entries = fetch.entries.len(), "catalog fetch: fresh")
+            }
+            FetchSource::NotModified => tracing::info!("catalog fetch: not modified"),
+            FetchSource::Offline { error } => {
+                tracing::warn!(error, "catalog fetch: offline, using cache")
+            }
+        },
+        Err(e) => tracing::error!(error = %e, "catalog fetch failed"),
+    }
+    result
+}
+
+fn fetch_cached_with_inner(
+    http: &dyn HttpGet,
+    cache_dir: &Path,
+) -> Result<CatalogFetch, CatalogError> {
     let cached = read_cache(cache_dir);
     let if_none_match = cached.as_ref().and_then(|(_, meta)| meta.etag.as_deref());
 

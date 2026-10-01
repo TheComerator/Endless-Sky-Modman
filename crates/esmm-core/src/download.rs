@@ -37,6 +37,23 @@ pub fn download_to(
     progress: &mut dyn FnMut(u64, Option<u64>),
     cancel: &AtomicBool,
 ) -> Result<Downloaded, DownloadError> {
+    tracing::info!(url, "download starting");
+    let result = download_to_inner(url, dest_file, max_bytes, progress, cancel);
+    match &result {
+        Ok(d) => tracing::info!(url, bytes = d.bytes, sha256 = d.sha256, "download finished"),
+        Err(DownloadError::Cancelled) => tracing::info!(url, "download cancelled"),
+        Err(e) => tracing::warn!(url, error = %e, "download failed"),
+    }
+    result
+}
+
+fn download_to_inner(
+    url: &str,
+    dest_file: &Path,
+    max_bytes: u64,
+    progress: &mut dyn FnMut(u64, Option<u64>),
+    cancel: &AtomicBool,
+) -> Result<Downloaded, DownloadError> {
     if !url.starts_with("https://") {
         return Err(DownloadError::NotHttps(url.to_string()));
     }
