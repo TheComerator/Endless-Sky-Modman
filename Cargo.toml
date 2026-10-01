@@ -4,6 +4,7 @@ members = ["crates/esmm-core", "app/src-tauri"]
 
 [workspace.package]
 edition = "2024"
+license = "MIT"
 
 # Tauri's size guideline (https://tauri.app/concept/size/#cargo-configuration). Profiles only
 # take effect at the workspace root.

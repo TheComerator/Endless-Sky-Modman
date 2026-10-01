@@ -277,7 +277,7 @@ EndlessSky/
 - **Known limitation:** ureq 3.4.2 has no per-read or idle timeout, so a download that stalls mid-read blocks inside `read()` and can't be cancelled from inside `download_to` (the cancel flag is only checked between reads). The app layer must run downloads on a thread it can abandon. `manager.rs` inherits this: a `Fetcher` impl that needs live, interactive cancel must run on its own abandonable thread; `plan_install` itself doesn't expose per-call progress (a `Fetcher` impl can own its own progress callback/cancel flag instead). The app handles both: decision K's abandonable planning thread and `PlanFetcher`.
 - **Known gaps (game install detection):** Steam-as-Flatpak is not detected; AppImages require the user to add them manually via `GameInstall::standalone`. Both acceptable for now.
 - **Known risk (resolve/manager):** `plan_update` only *reports* a newly-added `requires` (decision C's checks run against it), it doesn't recursively resolve/download it the way `plan_install` does; the UI covers this with an "Install X first" fix button on the issue (decision K). `InstallPlan::disable_to_resolve` doesn't re-validate whether disabling that plugin now breaks something else that required it -- acceptable for a first pass (conflict targets are usually leaf plugins) but worth revisiting once there's real usage.
-- **Undecided:** project license (left out of Cargo.toml on purpose; Jon's JoyForge is MIT).
+- **License:** MIT, locked 2026-10-02 (matches Jon's JoyForge). `LICENSE` at the repo root; `license.workspace = true` on both crates.
 
 ---
 
