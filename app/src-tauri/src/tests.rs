@@ -522,6 +522,35 @@ fn cancelled_or_superseded_planning_never_becomes_pending() {
 }
 
 #[test]
+fn a_failed_download_of_the_requested_plugin_is_an_error_not_a_plan() {
+    let w = World::new();
+    w.catalog.lock().unwrap().push(entry("Unreachable", "1"));
+    w.shell.load_catalog(true).unwrap();
+    let ticket = w.shell.begin_planning();
+    let err = w.shell.plan_install(&ticket, "Unreachable").unwrap_err();
+    assert_eq!(kind(&err), "network");
+    assert!(err.message().contains("no fixture"), "{err}");
+    assert!(w.tmp_is_clean());
+
+    // A failed *dependency* download is still an issue in a reviewable plan.
+    w.add(
+        "Needs-It",
+        "Needs It",
+        "1",
+        PluginDeps {
+            requires: &["Unreachable"],
+            ..Default::default()
+        },
+    );
+    let ticket = w.shell.begin_planning();
+    let plan = w.shell.plan_install(&ticket, "Needs-It").unwrap();
+    assert!(matches!(
+        plan.issues.as_slice(),
+        [IssueView::CatalogDownloadFailed { catalog_name, .. }] if catalog_name == "Unreachable"
+    ));
+}
+
+#[test]
 fn installing_twice_is_refused_in_favor_of_update() {
     let w = World::new();
     w.add("A", "A", "1", PluginDeps::default());
