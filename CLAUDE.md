@@ -137,7 +137,7 @@ dependencies
 
 **D. Update checking.** Compare the install record's version against the catalog's `version` by string equality. Any difference = update available. Updating replaces the folder atomically and keeps the enabled state (stable folder name from A makes this work).
 
-**E. Profiles.** A profile records **only which plugins are enabled**, not versions. Because unlisted plugins default to enabled in `plugins.txt`, applying a profile must write an explicit `true`/`false` for every installed plugin. Applying a profile that references a plugin that isn't installed offers to install it. Flag drift when the live `plugins.txt` no longer matches the active profile (e.g. user toggled plugins in-game).
+**E. Profiles.** A profile records **only which plugins are enabled**, not versions. Because unlisted plugins default to enabled in `plugins.txt`, applying a profile must write an explicit enabled/disabled entry for every installed plugin (written as `1`/`0`). Applying a profile that references a plugin that isn't installed offers to install it. Flag drift when the live `plugins.txt` no longer matches the active profile (e.g. user toggled plugins in-game).
 - Profiles live in the manager's app-data dir (JSON), never in the game's config dir.
 - Each enabled entry stores the game identity and, when known from install records, the catalog name, so a missing plugin can be installed from the catalog.
 - First run: if no profiles exist, the current effective state is snapshotted into an active profile named "Default".

@@ -106,8 +106,16 @@ pub fn write_plugin_states(
     }
     let path = config_dir.join(PLUGINS_FILE);
     let backup_path = config_dir.join(BACKUP_FILE);
-    let backup = match fs::copy(&path, &backup_path) {
-        Ok(_) => Some(backup_path),
+    // Copied then renamed, so a crash mid-copy never leaves a truncated backup.
+    fs::create_dir_all(config_dir)?;
+    let tmp = tempfile::Builder::new()
+        .prefix(".plugins.txt.esmm-bak-")
+        .tempfile_in(config_dir)?;
+    let backup = match fs::copy(&path, tmp.path()) {
+        Ok(_) => {
+            tmp.persist(&backup_path).map_err(|e| e.error)?;
+            Some(backup_path)
+        }
         Err(e) if e.kind() == io::ErrorKind::NotFound => None,
         Err(e) => return Err(e.into()),
     };

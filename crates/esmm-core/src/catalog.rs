@@ -1,6 +1,15 @@
-//! The official plugin index from `endless-sky/endless-sky-plugins`.
+//! The official plugin index from `endless-sky/endless-sky-plugins`, plus
+//! Design Decision I: an on-disk cache (catalog body + ETag, and icons by URL)
+//! so the app works offline and doesn't re-download unchanged data.
 
-use serde::Deserialize;
+use std::collections::HashSet;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use ureq::Agent;
 
 pub const CATALOG_URL: &str = "https://raw.githubusercontent.com/endless-sky/endless-sky-plugins/master/generated/plugins.json";
 
