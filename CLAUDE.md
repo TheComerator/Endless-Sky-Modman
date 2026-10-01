@@ -95,6 +95,8 @@ dependencies
 
 **Launch targets (confirmed):** Steam app id `404410` (`steam://rungameid/404410`); Flathub app id `io.github.endless_sky.endless_sky`; no Snap package exists.
 
+**Executable names (confirmed 2026-10-01 from `CMakeLists.txt` `OUTPUT_NAME`, `cd_release.yaml`, `steam/docker-compose.yml`, `utils/build_appimage.sh`, and the Flathub manifest):** `endless-sky` on Linux (native, Steam Linux depot, Flatpak `command`, AppImage); `Endless Sky.exe` on Windows (also the Steam Windows depot, so also what runs under Proton); `Endless Sky` on macOS (`Endless Sky.app/Contents/MacOS/Endless Sky`). All are at most 15 bytes, so Linux's truncated process name (`/proc/<pid>/comm`) matches them exactly. Used by `game_state::detect_game_process`.
+
 ---
 
 ## Tech Stack (locked in 2026-10-01)
@@ -136,8 +138,18 @@ dependencies
 **D. Update checking.** Compare the install record's version against the catalog's `version` by string equality. Any difference = update available. Updating replaces the folder atomically and keeps the enabled state (stable folder name from A makes this work).
 
 **E. Profiles.** A profile records **only which plugins are enabled**, not versions. Because unlisted plugins default to enabled in `plugins.txt`, applying a profile must write an explicit `true`/`false` for every installed plugin. Applying a profile that references a plugin that isn't installed offers to install it. Flag drift when the live `plugins.txt` no longer matches the active profile (e.g. user toggled plugins in-game).
+- Profiles live in the manager's app-data dir (JSON), never in the game's config dir.
+- Each enabled entry stores the game identity and, when known from install records, the catalog name, so a missing plugin can be installed from the catalog.
+- First run: if no profiles exist, the current effective state is snapshotted into an active profile named "Default".
+- A plugin installed while a profile is active is added to that profile as enabled.
+- Drift is only about installed plugins: enabled but not in the profile, or in the profile but disabled. A profile entry that isn't installed is "missing", not drift. The UI offers three resolutions: update the active profile to match (keeps missing entries), restore the profile (apply), or save the current state as a new named profile.
+- Profile names: empty or whitespace-only names and duplicates are rejected; names are trimmed.
+(Confirmed by Jon 2026-10-01; implemented in `esmm-core/src/profiles.rs`.)
 
 **F. `plugins.txt` safety.** Detect a running game and block writes while it runs (the game would overwrite our changes). Back up before every write; write atomically (temp file + rename).
+- If the process list can't be read, the write proceeds and the outcome says detection failed, so the UI can warn.
+- The backup is `<config>/plugins.txt.esmm-bak`, overwritten on each write. Nothing is ever written to `plugins/`.
+(Implemented in `esmm-core/src/game_state.rs`.)
 
 **G. Downloads.** Streaming with progress and cancel. Zip-slip protection (reject entries escaping the target), size limits, HTTPS only. Validate the extracted folder with the game's own `IsPlugin` rule before committing.
 
@@ -164,10 +176,17 @@ EndlessSky/
         ├── src/
         │   ├── datanode.rs          # DataNode parser/writer (mirrors DataFile.cpp / DataWriter.cpp)
         │   ├── plugin_meta.rs       # plugin.txt -> PluginMeta (name, version, deps...)
-        │   ├── plugin_state.rs      # plugins.txt read/write (1/0 states)
-        │   └── catalog.rs           # catalog JSON parse + fetch (ureq)
+        │   ├── plugin_state.rs      # plugins.txt text parse/write (1/0 states)
+        │   ├── catalog.rs           # catalog JSON parse + fetch (ureq)
+        │   ├── download.rs          # streaming HTTPS download: progress, cancel, size cap, SHA-256
+        │   ├── install.rs           # zip extract (zip-slip safe), plugin root finding, atomic install/uninstall
+        │   ├── records.rs           # the manager's install records (JSON, app-data dir)
+        │   ├── game_state.rs        # game-running detection, safe plugins.txt read/write with backup
+        │   ├── profiles.rs          # profiles: snapshot, apply, drift, default profile (JSON, app-data dir)
+        │   └── files.rs             # internal: atomic writes and JSON load/save
         └── tests/
             ├── real_fixtures.rs     # tests against real captured files
+            ├── install.rs           # installer tests with zips built on the fly
             └── fixtures/            # catalog snapshot + 5 real plugin.txt files
 ```
 
@@ -181,10 +200,11 @@ The Tauri shell (`app/`) and React UI are not created yet.
 
 ## Current Status
 
-- **Last worked on:** 2026-10-01 (scaffolded the Rust workspace and `esmm-core`; DataNode parser/writer, `plugin.txt` metadata, `plugins.txt` state, and catalog parse/fetch all done with 20 passing tests plus 1 live network test; clippy and fmt clean)
-- **Stage:** Core library slice 1 done. No UI yet.
-- **Next steps (core):** catalog ETag cache (decision I); config/install detection per platform (decision H); installer with staging, wrapper stripping, zip-slip protection, and install records (A, G); dependency resolver and plan (C); profiles (E); game-running detection and atomic `plugins.txt` writes (F).
+- **Last worked on:** 2026-10-01 (core slice 3: review fixes for install/download, game-running detection and safe `plugins.txt` writes (F), profiles (E); all tests, clippy and fmt clean)
+- **Stage:** Core library: catalog, DataNode, plugin metadata/state, download, install/uninstall, install records, `plugins.txt` safety, and profiles are done. No UI yet.
+- **Next steps (core), in order:** game install detection per platform (H); dependency resolver and install orchestration that ties download, install, records, and profiles together (C); catalog and icon ETag cache (I); then the Tauri shell.
 - **Next steps (app):** install Tauri's Linux system libraries (needs `sudo apt`: `libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev pkg-config`), then scaffold the Tauri shell and React UI.
+- **Known limitation:** ureq 3.4.2 has no per-read or idle timeout, so a download that stalls mid-read blocks inside `read()` and can't be cancelled from inside `download_to` (the cancel flag is only checked between reads). The app layer must run downloads on a thread it can abandon.
 - **Still unverified:** Flatpak config path; `--version` output across install types.
 - **Undecided:** project license (left out of Cargo.toml on purpose; Jon's JoyForge is MIT).
 

@@ -43,6 +43,8 @@ pub struct Installed {
     pub folder: String,
     /// Parsed `plugin.txt`, if the plugin has one.
     pub meta: Option<PluginMeta>,
+    /// The replaced copy, if it could not be deleted. The install itself succeeded.
+    pub leftover: Option<PathBuf>,
 }
 
 impl Installed {
@@ -75,6 +77,14 @@ pub enum InstallError {
     InvalidFolderName(String),
     #[error("plugin folder {0:?} is not installed")]
     NotInstalled(String),
+    #[error(
+        "install failed ({install}) and the previous version could not be put back ({restore}); it is kept at {old_copy:?}"
+    )]
+    RestoreFailed {
+        install: io::Error,
+        restore: io::Error,
+        old_copy: PathBuf,
+    },
 }
 
 pub fn plugins_dir(config_dir: &Path) -> PathBuf {
@@ -175,6 +185,9 @@ pub fn find_plugin_root(staging_dir: &Path) -> Result<PathBuf, InstallError> {
     Err(InstallError::NotAPlugin)
 }
 
+/// Longest folder name, in bytes. 255 UTF-8 bytes never exceeds 255 UTF-16 units (Windows).
+const MAX_FOLDER_NAME_BYTES: usize = 255;
+
 /// A folder name valid on Windows, macOS and Linux.
 pub fn sanitize_folder_name(catalog_name: &str) -> String {
     let mut name: String = catalog_name
@@ -187,23 +200,46 @@ pub fn sanitize_folder_name(catalog_name: &str) -> String {
             }
         })
         .collect();
-    name.truncate(name.trim_end_matches(['.', ' ']).len());
+    trim_trailing_dots_and_spaces(&mut name);
+    if is_windows_reserved(&name) {
+        name.insert(0, '_');
+    }
+    let mut end = name.len().min(MAX_FOLDER_NAME_BYTES);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    name.truncate(end);
+    trim_trailing_dots_and_spaces(&mut name);
     if name.is_empty() {
         return "_".to_string();
     }
-    // Windows reserves these even with an extension ("con.txt") or trailing spaces before it.
-    let stem = name.split('.').next().unwrap_or("").trim_end_matches(' ');
-    let reserved = ["CON", "PRN", "AUX", "NUL"]
-        .iter()
-        .any(|r| stem.eq_ignore_ascii_case(r))
-        || (stem.len() == 4
-            && stem.is_ascii()
-            && (stem[..3].eq_ignore_ascii_case("COM") || stem[..3].eq_ignore_ascii_case("LPT"))
-            && matches!(stem.as_bytes()[3], b'1'..=b'9'));
-    if reserved {
-        name.insert(0, '_');
-    }
     name
+}
+
+fn trim_trailing_dots_and_spaces(name: &mut String) {
+    name.truncate(name.trim_end_matches(['.', ' ']).len());
+}
+
+/// Windows reserves these even with an extension ("con.txt") or trailing spaces before it.
+fn is_windows_reserved(name: &str) -> bool {
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    if ["CON", "PRN", "AUX", "NUL"].contains(&stem.as_str()) {
+        return true;
+    }
+    match stem.split_at_checked(3) {
+        Some(("COM" | "LPT", digit)) => {
+            matches!(
+                digit,
+                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+            )
+        }
+        _ => false,
+    }
 }
 
 fn check_folder_name(folder_name: &str) -> Result<(), InstallError> {
@@ -242,15 +278,24 @@ pub fn install(
     } else {
         None
     };
-    if let Err(e) = fs::rename(staged_root, &dest) {
-        if let Some((_, old_path)) = &old {
-            fs::rename(old_path, &dest)?;
+    if let Err(install) = fs::rename(staged_root, &dest) {
+        if let Some((holder, old_path)) = old
+            && let Err(restore) = fs::rename(&old_path, &dest)
+        {
+            // Dropping the holder would delete the user's only copy.
+            let _ = holder.keep();
+            return Err(InstallError::RestoreFailed {
+                install,
+                restore,
+                old_copy: old_path,
+            });
         }
-        return Err(e.into());
+        return Err(install.into());
     }
-    if let Some((holder, _)) = old {
-        holder.close()?;
-    }
+    let leftover = old.and_then(|(holder, _)| {
+        let path = holder.path().to_path_buf();
+        holder.close().err().map(|_| path)
+    });
 
     let meta = match fs::read_to_string(dest.join("plugin.txt")) {
         Ok(text) => Some(PluginMeta::parse(&text)),
@@ -261,6 +306,7 @@ pub fn install(
         path: dest,
         folder: folder_name.to_string(),
         meta,
+        leftover,
     })
 }
 

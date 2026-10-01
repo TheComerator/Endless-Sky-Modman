@@ -3,10 +3,12 @@
 //! Stored in the manager's app-data dir, never inside a plugin folder.
 
 use std::collections::BTreeMap;
-use std::io::{self, Write};
+use std::io;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+
+use crate::files;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstallRecord {
@@ -32,25 +34,11 @@ pub enum RecordsError {
 }
 
 pub fn load(path: &Path) -> Result<InstallRecords, RecordsError> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => Ok(serde_json::from_str(&text)?),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(InstallRecords::new()),
-        Err(e) => Err(e.into()),
-    }
+    files::load_json(path)
 }
 
 pub fn save(path: &Path, records: &InstallRecords) -> Result<(), RecordsError> {
-    let dir = match path.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p,
-        _ => Path::new("."),
-    };
-    std::fs::create_dir_all(dir)?;
-    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
-    serde_json::to_writer_pretty(&mut tmp, records)?;
-    tmp.write_all(b"\n")?;
-    tmp.as_file().sync_all()?;
-    tmp.persist(path).map_err(|e| e.error)?;
-    Ok(())
+    files::save_json(path, records)
 }
 
 #[cfg(test)]

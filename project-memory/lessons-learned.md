@@ -21,3 +21,13 @@ Format: WHAT went wrong, WHY it went wrong, HOW to prevent it.
 **Why it went wrong:** The DataNode format has two quoting styles (`"..."` and `` `...` ``), and the ad-hoc check only handled one.
 
 **How to prevent it:** Never parse DataNode files with ad-hoc regex in real code. Use the proper parser (to be written per DataFile.cpp's tokenizer rules), and include backtick-quoted samples in its test fixtures.
+
+---
+
+## Wrote a test that depended on the dev machine's state (2026-10-01)
+
+**What went wrong:** The first version of the real process-list test in `game_state.rs` asserted `detect_game_process() == NotRunning`. That passes on the VPS but would fail for anyone running the test with Endless Sky open. Caught on review before it was committed; changed to assert only that detection isn't `Unknown`.
+
+**Why it went wrong:** Asserted what is true on this box instead of what the code guarantees.
+
+**How to prevent it:** Tests that touch the live system (processes, home dirs, network) should assert only properties that hold on any machine; put exact-outcome checks in tests over injected inputs (here, `game_process_from`).
