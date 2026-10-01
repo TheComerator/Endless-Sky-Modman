@@ -1019,6 +1019,71 @@ pub fn commit_update(
     Ok(report_from(outcome, vec![result], Vec::new(), Vec::new()))
 }
 
+/// Commits every staged update in order, the same partial-failure honesty as [`commit`]: if
+/// one plugin's install fails partway through the batch, every update before it is still
+/// persisted and the failing folder/error are reported, rather than losing successful work
+/// to an unrelated later failure.
+///
+/// Unlike [`commit`], an update never touches enabled state (same as [`commit_update`]):
+/// whatever `plugins.txt` already says for each identity stands.
+pub fn commit_update_all(
+    plans: Vec<UpdatePlan>,
+    ctx: &CommitContext,
+    override_issues: bool,
+) -> Result<CommitReport, CommitError> {
+    let all_issues: Vec<Issue> = plans.iter().flat_map(|p| p.issues.iter().cloned()).collect();
+    refuse_if_blocked(&all_issues, override_issues)?;
+    let game = refuse_if_game_running(ctx.detect_game)?;
+
+    let plugins_dir = install::plugins_dir(ctx.config_dir);
+    let tmp_dir = install::tmp_dir(ctx.config_dir);
+
+    let mut installed = Vec::new();
+    let mut upsert_records = Vec::new();
+
+    for plan in plans {
+        let staged = plan.staged;
+        let folder = staged.folder.clone();
+        match install::install(&staged.root, &plugins_dir, &tmp_dir, &staged.folder) {
+            Ok(result) => {
+                upsert_records.push(InstallRecord {
+                    catalog_name: staged.catalog_name,
+                    folder: staged.folder,
+                    identity: result.identity().to_string(),
+                    version: staged.version,
+                    source_url: staged.source_url,
+                    sha256: staged.sha256,
+                });
+                installed.push(result);
+            }
+            Err(error) => {
+                let outcome = persist_changes(
+                    ctx,
+                    ChangeSet {
+                        upsert_records: &upsert_records,
+                        ..Default::default()
+                    },
+                    game,
+                )?;
+                return Err(CommitError::InstallFailed {
+                    report: Box::new(report_from(outcome, installed, Vec::new(), Vec::new())),
+                    folder,
+                    error,
+                });
+            }
+        }
+    }
+    let outcome = persist_changes(
+        ctx,
+        ChangeSet {
+            upsert_records: &upsert_records,
+            ..Default::default()
+        },
+        game,
+    )?;
+    Ok(report_from(outcome, installed, Vec::new(), Vec::new()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

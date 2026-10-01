@@ -721,6 +721,210 @@ fn update_keeps_enabled_state_and_folder_name() {
 }
 
 #[test]
+fn update_all_commits_every_staged_plugin() {
+    let mut world = World::new();
+    let a_v1 = world.add_plugin("A-Cat", Some("A"), &[], &[], &[], None);
+    let b_v1 = world.add_plugin("B-Cat", Some("B"), &[], &[], &[], None);
+    {
+        let snap = Snapshot::take(&world);
+        let ctx = snap.ctx(&world, None);
+        manager::commit(
+            manager::plan_install(&a_v1, &ctx),
+            &world.commit_ctx(),
+            false,
+        )
+        .unwrap();
+    }
+    {
+        let snap = Snapshot::take(&world);
+        let ctx = snap.ctx(&world, None);
+        manager::commit(
+            manager::plan_install(&b_v1, &ctx),
+            &world.commit_ctx(),
+            false,
+        )
+        .unwrap();
+    }
+
+    for (cat, src) in [("A-Cat", "A"), ("B-Cat", "B")] {
+        world.catalog.retain(|e| e.name != cat);
+        let v2 = entry(cat, "2.0");
+        let zip_path = world.dir.path().join(format!("{cat}-v2.zip"));
+        make_plugin_zip(
+            &zip_path,
+            &format!("{cat}-src-v2"),
+            &plugin_txt(Some(src), &[], &[], &[], None),
+        );
+        world.fetcher.files.insert(v2.url.clone(), zip_path);
+        world.catalog.push(v2);
+    }
+
+    let snap = Snapshot::take(&world);
+    let ctx = snap.ctx(&world, None);
+    let plans = vec![
+        manager::plan_update("A-Cat", &ctx).unwrap(),
+        manager::plan_update("B-Cat", &ctx).unwrap(),
+    ];
+    assert!(plans.iter().all(|p| p.issues.is_empty()));
+    let report = manager::commit_update_all(plans, &world.commit_ctx(), false).unwrap();
+    assert_eq!(report.installed.len(), 2);
+
+    assert_eq!(world.records()["A-Cat"].version, "2.0");
+    assert_eq!(world.records()["B-Cat"].version, "2.0");
+    assert_eq!(
+        world.folder_names(),
+        ["A-Cat", "B-Cat"],
+        "folder names are stable across the batch"
+    );
+}
+
+#[test]
+fn update_all_blocked_issue_refuses_the_whole_batch_until_overridden() {
+    let mut world = World::new();
+    let a_v1 = world.add_plugin("A-Cat", Some("A"), &[], &[], &[], None);
+    let b_v1 = world.add_plugin("B-Cat", Some("B"), &[], &[], &[], None);
+    {
+        let snap = Snapshot::take(&world);
+        let ctx = snap.ctx(&world, None);
+        manager::commit(
+            manager::plan_install(&a_v1, &ctx),
+            &world.commit_ctx(),
+            false,
+        )
+        .unwrap();
+        manager::commit(
+            manager::plan_install(&b_v1, &ctx),
+            &world.commit_ctx(),
+            false,
+        )
+        .unwrap();
+    }
+
+    // B-Cat's new version adds a requirement that isn't installed: that plan alone is
+    // blocked, which must block committing the batch at all without an override.
+    world.catalog.retain(|e| e.name != "B-Cat");
+    let b_v2 = entry("B-Cat", "2.0");
+    let zip_path = world.dir.path().join("B-Cat-v2.zip");
+    make_plugin_zip(
+        &zip_path,
+        "B-Cat-src-v2",
+        &plugin_txt(Some("B"), &["New"], &[], &[], None),
+    );
+    world.fetcher.files.insert(b_v2.url.clone(), zip_path);
+    world.catalog.push(b_v2);
+    world.catalog.retain(|e| e.name != "A-Cat");
+    let a_v2 = entry("A-Cat", "2.0");
+    let zip_path = world.dir.path().join("A-Cat-v2.zip");
+    make_plugin_zip(
+        &zip_path,
+        "A-Cat-src-v2",
+        &plugin_txt(Some("A"), &[], &[], &[], None),
+    );
+    world.fetcher.files.insert(a_v2.url.clone(), zip_path);
+    world.catalog.push(a_v2);
+
+    let snap = Snapshot::take(&world);
+    let ctx = snap.ctx(&world, None);
+    let plans = vec![
+        manager::plan_update("A-Cat", &ctx).unwrap(),
+        manager::plan_update("B-Cat", &ctx).unwrap(),
+    ];
+    let err = manager::commit_update_all(plans, &world.commit_ctx(), false).unwrap_err();
+    assert!(matches!(err, CommitError::Blocked(_)));
+    // Nothing committed: refusing is checked before anything is installed.
+    assert_eq!(world.records()["A-Cat"].version, "1.0");
+    assert_eq!(world.records()["B-Cat"].version, "1.0");
+
+    let snap = Snapshot::take(&world);
+    let ctx = snap.ctx(&world, None);
+    let plans = vec![
+        manager::plan_update("A-Cat", &ctx).unwrap(),
+        manager::plan_update("B-Cat", &ctx).unwrap(),
+    ];
+    manager::commit_update_all(plans, &world.commit_ctx(), true).unwrap();
+    assert_eq!(world.records()["A-Cat"].version, "2.0");
+    assert_eq!(world.records()["B-Cat"].version, "2.0");
+}
+
+#[test]
+fn update_all_mid_batch_failure_persists_what_succeeded() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut world = World::new();
+    let a_v1 = world.add_plugin("A-Cat", Some("A"), &[], &[], &[], None);
+    let b_v1 = world.add_plugin("B-Cat", Some("B"), &[], &[], &[], None);
+    {
+        let snap = Snapshot::take(&world);
+        let ctx = snap.ctx(&world, None);
+        manager::commit(
+            manager::plan_install(&a_v1, &ctx),
+            &world.commit_ctx(),
+            false,
+        )
+        .unwrap();
+        manager::commit(
+            manager::plan_install(&b_v1, &ctx),
+            &world.commit_ctx(),
+            false,
+        )
+        .unwrap();
+    }
+
+    for (cat, src) in [("A-Cat", "A"), ("B-Cat", "B")] {
+        world.catalog.retain(|e| e.name != cat);
+        let v2 = entry(cat, "2.0");
+        let zip_path = world.dir.path().join(format!("{cat}-v2.zip"));
+        make_plugin_zip(
+            &zip_path,
+            &format!("{cat}-src-v2"),
+            &plugin_txt(Some(src), &[], &[], &[], None),
+        );
+        world.fetcher.files.insert(v2.url.clone(), zip_path);
+        world.catalog.push(v2);
+    }
+
+    let snap = Snapshot::take(&world);
+    let ctx = snap.ctx(&world, None);
+    let plans = vec![
+        manager::plan_update("A-Cat", &ctx).unwrap(),
+        manager::plan_update("B-Cat", &ctx).unwrap(),
+    ];
+
+    // Sabotage only B's staged copy (second in the batch), same trick as
+    // `mid_commit_failure_leaves_records_and_plugins_txt_consistent`: A must already be
+    // persisted by the time B's install fails.
+    let staged_b = find_dir_named(&world.tmp_dir(), "B-Cat-src-v2").expect("B's staged folder");
+    let locked_parent = staged_b.parent().unwrap().to_path_buf();
+    fs::set_permissions(&locked_parent, fs::Permissions::from_mode(0o555)).unwrap();
+    if fs::write(locked_parent.join("probe"), "").is_ok() {
+        fs::set_permissions(&locked_parent, fs::Permissions::from_mode(0o755)).unwrap();
+        eprintln!("skipping: permissions not enforced (running as root?)");
+        return;
+    }
+
+    let result = manager::commit_update_all(plans, &world.commit_ctx(), false);
+    fs::set_permissions(&locked_parent, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let (report, folder) = match result {
+        Err(CommitError::InstallFailed { report, folder, .. }) => (report, folder),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(folder, "B-Cat");
+    assert_eq!(report.installed.len(), 1);
+    assert_eq!(report.installed[0].identity(), "A");
+    assert_eq!(
+        world.records()["A-Cat"].version,
+        "2.0",
+        "A's update was persisted before B's failed"
+    );
+    assert_eq!(
+        world.records()["B-Cat"].version,
+        "1.0",
+        "B's update never committed"
+    );
+}
+
+#[test]
 fn dropping_an_uncommitted_plan_cleans_up_staging() {
     let mut world = World::new();
     world.add_plugin("C", Some("C"), &[], &[], &[], None);
