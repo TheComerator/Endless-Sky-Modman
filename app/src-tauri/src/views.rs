@@ -485,6 +485,7 @@ impl From<&Note> for NoteView {
 pub enum PlanKind {
     Install,
     Update,
+    UpdateAll,
     Enable,
     Disable,
     Uninstall,

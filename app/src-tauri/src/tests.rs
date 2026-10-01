@@ -601,6 +601,56 @@ fn update_is_detected_planned_and_committed() {
     assert!(!a.enabled, "an update keeps the enabled state (decision D)");
 }
 
+#[test]
+fn update_all_commits_every_outdated_plugin_in_one_plan() {
+    let w = World::new();
+    w.add("A", "A", "v1", PluginDeps::default());
+    w.install("A");
+    w.add("B", "B", "v1", PluginDeps::default());
+    w.install("B");
+    w.set_enabled("B", false);
+
+    w.add("A", "A", "v2", PluginDeps::default());
+    w.add("B", "B", "v2", PluginDeps::default());
+
+    let ticket = w.shell.begin_planning();
+    let plan = w.shell.plan_update_all(&ticket).unwrap();
+    assert_eq!(plan.kind, PlanKind::UpdateAll);
+    assert_eq!(plan.steps.len(), 2, "{:?}", plan.steps);
+    assert!(
+        plan.steps.iter().any(
+            |s| matches!(s, StepView::Update { identity, from, to, .. } if identity == "A" && from == "v1" && to == "v2")
+        )
+    );
+    assert!(
+        plan.steps.iter().any(
+            |s| matches!(s, StepView::Update { identity, from, to, .. } if identity == "B" && from == "v1" && to == "v2")
+        )
+    );
+
+    w.shell.commit_plan(plan.plan_id, false).unwrap();
+    assert_eq!(w.plugin("A").update, UpdateView::UpToDate);
+    assert_eq!(w.plugin("B").update, UpdateView::UpToDate);
+    assert!(w.plugin("A").enabled);
+    assert!(
+        !w.plugin("B").enabled,
+        "update-all keeps each plugin's enabled state, same as a single update"
+    );
+}
+
+#[test]
+fn update_all_with_nothing_outdated_is_an_error_not_an_empty_plan() {
+    let w = World::new();
+    w.add("A", "A", "v1", PluginDeps::default());
+    w.install("A");
+
+    let ticket = w.shell.begin_planning();
+    assert_eq!(
+        kind(&w.shell.plan_update_all(&ticket).unwrap_err()),
+        "invalid"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Enable / disable / uninstall
 // ---------------------------------------------------------------------------
@@ -894,6 +944,32 @@ fn the_active_profile_cannot_be_deleted() {
     assert_eq!(
         kind(&w.shell.delete_profile("Default").unwrap_err()),
         "notFound"
+    );
+}
+
+#[test]
+fn rename_profile_preserves_contents_and_active_status() {
+    let w = World::new();
+    w.add("A", "A", "v1", PluginDeps::default());
+    w.install("A");
+    w.state(); // creates the "Default" profile, active, containing A
+
+    let renamed = w.shell.rename_profile("Default", "Main").unwrap();
+    assert_eq!(renamed, "Main");
+    let profiles = w.state().profiles;
+    assert_eq!(profiles.active.as_deref(), Some("Main"));
+    assert_eq!(profiles.profiles.len(), 1);
+    assert_eq!(profiles.profiles[0].name, "Main");
+    assert_eq!(profiles.profiles[0].enabled_count, 1, "A is still in it");
+
+    assert_eq!(
+        kind(&w.shell.rename_profile("Gone", "New").unwrap_err()),
+        "notFound"
+    );
+    w.shell.create_profile("Other").unwrap();
+    assert_eq!(
+        kind(&w.shell.rename_profile("Other", "Main").unwrap_err()),
+        "invalid" // ProfileError::DuplicateName maps to CmdError::Invalid
     );
 }
 

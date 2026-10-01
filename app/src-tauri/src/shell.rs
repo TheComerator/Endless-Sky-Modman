@@ -104,6 +104,18 @@ enum PendingPlan {
         plan: UpdatePlan,
         step: StepView,
     },
+    /// One combined plan over every outdated plugin (the "update all" button), so all of
+    /// their issues/notes are reviewed together before anything commits - not several
+    /// separate plan/commit round trips, and not a silent batch that skips past one
+    /// plugin's blocking issue. `issues`/`notes`/`steps` are each plan's own, flattened
+    /// once at plan time (same pattern as `ApplyProfile`), since there's no single owned
+    /// plan struct here to borrow them from.
+    UpdateAll {
+        plans: Vec<UpdatePlan>,
+        steps: Vec<StepView>,
+        issues: Vec<Issue>,
+        notes: Vec<Note>,
+    },
     Enable(EnablePlan),
     Disable(DisablePlan),
     Uninstall(UninstallPlan),
@@ -136,6 +148,7 @@ impl Pending {
         match &self.plan {
             PendingPlan::Install { plan, .. } => &plan.issues,
             PendingPlan::Update { plan, .. } => &plan.issues,
+            PendingPlan::UpdateAll { issues, .. } => issues,
             PendingPlan::Enable(plan) => &plan.issues,
             PendingPlan::Disable(plan) => &plan.issues,
             PendingPlan::Uninstall(plan) => &plan.issues,
@@ -147,6 +160,7 @@ impl Pending {
         match &self.plan {
             PendingPlan::Install { plan, .. } => &plan.notes,
             PendingPlan::Update { plan, .. } => &plan.notes,
+            PendingPlan::UpdateAll { notes, .. } => notes,
             PendingPlan::Enable(plan) => &plan.notes,
             PendingPlan::ApplyProfile { notes, .. } => notes,
             PendingPlan::Disable(_) | PendingPlan::Uninstall(_) => &[],
@@ -157,6 +171,7 @@ impl Pending {
         match &self.plan {
             PendingPlan::Install { .. } => PlanKind::Install,
             PendingPlan::Update { .. } => PlanKind::Update,
+            PendingPlan::UpdateAll { .. } => PlanKind::UpdateAll,
             PendingPlan::Enable(_) => PlanKind::Enable,
             PendingPlan::Disable(_) => PlanKind::Disable,
             PendingPlan::Uninstall(_) => PlanKind::Uninstall,
@@ -189,6 +204,7 @@ impl Pending {
                 })
                 .collect(),
             PendingPlan::Update { step, .. } => vec![step.clone()],
+            PendingPlan::UpdateAll { steps, .. } => steps.clone(),
             PendingPlan::Enable(plan) => vec![StepView::Enable {
                 identity: plan.identity.clone(),
             }],
@@ -866,6 +882,94 @@ impl Shell {
         )
     }
 
+    /// One combined plan over every plugin with `UpdateView::Available` (the "update all"
+    /// button): each is planned the same way `plan_update` plans one, but all of their
+    /// issues/notes/steps are combined into a single review before anything commits, rather
+    /// than one plan/commit dialog per plugin. A plugin whose download fails is skipped
+    /// (not staged), with a `CatalogDownloadFailed` issue reported for it like
+    /// `plan_install`'s recursive requirement-fetching already does - that still blocks the
+    /// whole batch until overridden, the same way any other issue does.
+    pub fn plan_update_all(&self, ticket: &Ticket) -> CmdResult<PlanView> {
+        let (_, snap) = self.snapshot()?;
+        Self::require_catalog(&snap)?;
+        let outdated: Vec<String> = snap
+            .installed
+            .iter()
+            .filter(|p| {
+                p.record.as_ref().is_some_and(|r| {
+                    matches!(
+                        manager::update_status(r, &snap.catalog.entries),
+                        manager::UpdateStatus::Available { .. }
+                    )
+                })
+            })
+            .map(|p| p.folder.clone())
+            .collect();
+        if outdated.is_empty() {
+            return Err(CmdError::invalid("No updates are available."));
+        }
+
+        let fetcher = self.plan_fetcher(ticket);
+        let mut plans = Vec::new();
+        let mut steps = Vec::new();
+        let mut issues = Vec::new();
+        let mut notes = Vec::new();
+        for folder in &outdated {
+            Self::check_live(ticket)?;
+            let current = find_installed(&snap, folder)?;
+            // Safe: `outdated` only contains folders whose `record` was `Some` above.
+            let record = current.record.as_ref().expect("checked above");
+            let entry = find_entry(&snap.catalog.entries, &record.catalog_name)?;
+            match manager::plan_update(folder, &snap.plan_ctx(&fetcher)) {
+                Ok(plan) => {
+                    steps.push(StepView::Update {
+                        catalog_name: entry.name.clone(),
+                        identity: current.identity.clone(),
+                        folder: folder.clone(),
+                        from: record.version.clone(),
+                        to: entry.version.clone(),
+                    });
+                    issues.extend(plan.issues.iter().cloned());
+                    notes.extend(plan.notes.iter().cloned());
+                    plans.push(plan);
+                }
+                Err(error) => {
+                    if ticket.cancel.load(Ordering::Relaxed) {
+                        return Err(CmdError::cancelled());
+                    }
+                    issues.push(Issue::CatalogDownloadFailed {
+                        catalog_name: entry.name.clone(),
+                        error,
+                    });
+                }
+            }
+        }
+        let fixes = requirement_fixes(&issues, &snap);
+        self.finish(
+            ticket,
+            Pending {
+                id: ticket.id,
+                paths: snap.paths.clone(),
+                target: format!(
+                    "{} plugin{}",
+                    outdated.len(),
+                    if outdated.len() == 1 { "" } else { "s" }
+                ),
+                plan: PendingPlan::UpdateAll {
+                    plans,
+                    steps,
+                    issues,
+                    notes,
+                },
+                fixes,
+                missing: Vec::new(),
+                game_version: snap.game_version.clone(),
+                unmanaged_target: false,
+                root_identity: None,
+            },
+        )
+    }
+
     pub fn plan_enable(&self, ticket: &Ticket, identity: &str) -> CmdResult<PlanView> {
         let (_, snap) = self.snapshot()?;
         find_identity(&snap, identity)?;
@@ -1035,6 +1139,9 @@ impl Shell {
             PendingPlan::Update { plan, .. } => {
                 manager::commit_update(plan, &ctx, override_issues)?
             }
+            PendingPlan::UpdateAll { plans, .. } => {
+                manager::commit_update_all(plans, &ctx, override_issues)?
+            }
             PendingPlan::Enable(plan) => manager::commit_enable(plan, &ctx, override_issues)?,
             PendingPlan::Disable(plan) => manager::commit_disable(plan, &ctx, override_issues)?,
             PendingPlan::Uninstall(plan) => manager::commit_uninstall(plan, &ctx, override_issues)?,
@@ -1098,6 +1205,11 @@ impl Shell {
         self.with_profiles(|store, snap| {
             Ok(store.save_current_as(name, &snap.identities(), &snap.states, &snap.records)?)
         })
+    }
+
+    /// Returns the stored (trimmed) name, same as `create_profile`.
+    pub fn rename_profile(&self, old_name: &str, new_name: &str) -> CmdResult<String> {
+        self.with_profiles(|store, _| Ok(store.rename(old_name, new_name)?))
     }
 
     /// Drift resolution: make the active profile match the live `plugins.txt`.

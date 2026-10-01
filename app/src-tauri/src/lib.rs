@@ -7,6 +7,7 @@
 mod commands;
 mod error;
 mod fetcher;
+mod logging;
 mod settings;
 mod shell;
 mod views;
@@ -40,6 +41,7 @@ fn with_commands<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
         commands::adopt_plugin,
         commands::plan_install,
         commands::plan_update,
+        commands::plan_update_all,
         commands::plan_enable,
         commands::plan_disable,
         commands::plan_uninstall,
@@ -49,6 +51,7 @@ fn with_commands<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
         commands::discard_plan,
         commands::commit_plan,
         commands::create_profile,
+        commands::rename_profile,
         commands::update_active_profile,
         commands::delete_profile,
     ])
@@ -60,6 +63,14 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            if let Ok(log_dir) = app.path().app_log_dir()
+                && let Some(guard) = logging::init(&log_dir)
+            {
+                tracing::info!(version = env!("CARGO_PKG_VERSION"), "esmm starting");
+                // Kept alive for the app's lifetime via Tauri's state management;
+                // dropping it would stop the background writer thread.
+                app.manage(guard);
+            }
             let handle = app.handle().clone();
             let progress: ProgressSink = Arc::new(move |p| {
                 let _ = handle.emit(DOWNLOAD_PROGRESS_EVENT, p);
