@@ -1,0 +1,2 @@
+name "Jimmy's Ship Emporium"
+about "Simply adds the Glaive, a spicy Republic Navy ship produced after the Kor Sestor incursion."
