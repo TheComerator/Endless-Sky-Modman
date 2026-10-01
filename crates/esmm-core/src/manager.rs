@@ -391,10 +391,25 @@ fn finalize_plan(ctx: &PlanContext, steps: Vec<PlanStep>, mut issues: Vec<Issue>
 }
 
 pub fn plan_install(entry: &CatalogEntry, ctx: &PlanContext) -> InstallPlan {
+    tracing::info!(catalog_name = entry.name, "planning install");
     let mut builder = PlanBuilder::new(ctx);
     builder.stage_root(entry);
     let PlanBuilder { steps, issues, .. } = builder;
-    finalize_plan(ctx, steps, issues)
+    let plan = finalize_plan(ctx, steps, issues);
+    if plan.issues.is_empty() {
+        tracing::info!(
+            catalog_name = entry.name,
+            steps = plan.steps.len(),
+            "install plan ready"
+        );
+    } else {
+        tracing::warn!(
+            catalog_name = entry.name,
+            issues = plan.issues.len(),
+            "install plan has issues"
+        );
+    }
+    plan
 }
 
 // ---------------------------------------------------------------------------
@@ -438,6 +453,7 @@ pub struct EnablePlan {
 }
 
 pub fn plan_enable(identity: &str, ctx: &PlanContext) -> EnablePlan {
+    tracing::info!(identity, "planning enable");
     let planned = planned_from_installed(ctx, Some((identity, true)));
     let mut issues = resolve::check_state(&planned, ctx.game_version);
     issues.extend(resolve::check_requirements(
@@ -470,6 +486,11 @@ pub fn plan_enable(identity: &str, ctx: &PlanContext) -> EnablePlan {
             CatalogMatch::NoMatch => {}
         }
     }
+    if issues.is_empty() {
+        tracing::info!(identity, "enable plan ready");
+    } else {
+        tracing::warn!(identity, issues = issues.len(), "enable plan has issues");
+    }
     EnablePlan {
         identity: identity.to_string(),
         issues,
@@ -497,10 +518,15 @@ fn required_by_issue(identity: &str, planned: &[PlannedPlugin]) -> Vec<Issue> {
 }
 
 pub fn plan_disable(identity: &str, ctx: &PlanContext) -> DisablePlan {
+    tracing::info!(identity, "planning disable");
     let planned = planned_from_installed(ctx, None);
+    let issues = required_by_issue(identity, &planned);
+    if !issues.is_empty() {
+        tracing::warn!(identity, issues = issues.len(), "disable plan has issues");
+    }
     DisablePlan {
         identity: identity.to_string(),
-        issues: required_by_issue(identity, &planned),
+        issues,
     }
 }
 
@@ -512,15 +538,20 @@ pub struct UninstallPlan {
 }
 
 pub fn plan_uninstall(folder: &str, ctx: &PlanContext) -> UninstallPlan {
+    tracing::info!(folder, "planning uninstall");
     let identity = ctx
         .installed
         .iter()
         .find(|p| p.folder == folder)
         .map_or_else(|| folder.to_string(), |p| p.identity.clone());
     let planned = planned_from_installed(ctx, None);
+    let issues = required_by_issue(&identity, &planned);
+    if !issues.is_empty() {
+        tracing::warn!(folder, issues = issues.len(), "uninstall plan has issues");
+    }
     UninstallPlan {
         folder: folder.to_string(),
-        issues: required_by_issue(&identity, &planned),
+        issues,
         identity,
     }
 }
@@ -542,6 +573,7 @@ pub struct UpdatePlan {
 /// old one didn't have. Does not itself resolve a newly-added requirement (unlike
 /// `plan_install`'s recursion) -- it only reports it; installing it is a separate operation.
 pub fn plan_update(folder: &str, ctx: &PlanContext) -> Result<UpdatePlan, String> {
+    tracing::info!(folder, "planning update");
     let current = ctx
         .installed
         .iter()
@@ -556,7 +588,9 @@ pub fn plan_update(folder: &str, ctx: &PlanContext) -> Result<UpdatePlan, String
         .iter()
         .find(|e| e.name == record.catalog_name)
         .ok_or_else(|| format!("{:?} is no longer in the catalog", record.catalog_name))?;
-    let staged = stage_download(ctx, entry)?;
+    let staged = stage_download(ctx, entry).inspect_err(|e| {
+        tracing::warn!(folder, error = e, "update plan failed to download");
+    })?;
 
     let currently_enabled = game_state::effective_enabled(ctx.states, &current.identity);
     let mut planned: Vec<PlannedPlugin> = ctx
@@ -584,6 +618,11 @@ pub fn plan_update(folder: &str, ctx: &PlanContext) -> Result<UpdatePlan, String
         ));
     }
     let notes = resolve::optional_notes(&planned);
+    if issues.is_empty() {
+        tracing::info!(folder, "update plan ready");
+    } else {
+        tracing::warn!(folder, issues = issues.len(), "update plan has issues");
+    }
     Ok(UpdatePlan {
         folder: folder.to_string(),
         staged,
@@ -825,12 +864,45 @@ fn report_from(
     }
 }
 
+/// Logs the outcome of any `commit*` function uniformly; `op` names which one.
+fn log_commit(op: &'static str, result: &Result<CommitReport, CommitError>) {
+    match result {
+        Ok(r) => tracing::info!(
+            op,
+            installed = r.installed.len(),
+            enabled = r.enabled.len(),
+            disabled = r.disabled.len(),
+            "commit succeeded"
+        ),
+        Err(CommitError::Blocked(issues)) => {
+            tracing::warn!(
+                op,
+                issues = issues.len(),
+                "commit blocked by unresolved issues"
+            )
+        }
+        Err(CommitError::GameRunning) => tracing::warn!(op, "commit refused: game is running"),
+        Err(e) => tracing::error!(op, error = %e, "commit failed"),
+    }
+}
+
 /// Installs every staged plugin in order (dependencies first), then writes records,
 /// `plugins.txt` and the active profile. If a step fails partway, everything before it is
 /// still persisted (so the manager's own state matches what's actually on disk) and the
 /// failing folder/error are reported; this isn't a multi-plugin transaction, just an honest
 /// account of what happened.
 pub fn commit(
+    plan: InstallPlan,
+    ctx: &CommitContext,
+    override_issues: bool,
+) -> Result<CommitReport, CommitError> {
+    tracing::info!("committing install");
+    let result = commit_inner(plan, ctx, override_issues);
+    log_commit("install", &result);
+    result
+}
+
+fn commit_inner(
     plan: InstallPlan,
     ctx: &CommitContext,
     override_issues: bool,
@@ -906,6 +978,17 @@ pub fn commit_enable(
     ctx: &CommitContext,
     override_issues: bool,
 ) -> Result<CommitReport, CommitError> {
+    tracing::info!(identity = plan.identity, "committing enable");
+    let result = commit_enable_inner(plan, ctx, override_issues);
+    log_commit("enable", &result);
+    result
+}
+
+fn commit_enable_inner(
+    plan: EnablePlan,
+    ctx: &CommitContext,
+    override_issues: bool,
+) -> Result<CommitReport, CommitError> {
     refuse_if_blocked(&plan.issues, override_issues)?;
     let game = refuse_if_game_running(ctx.detect_game)?;
     let to_enable = [plan.identity];
@@ -930,6 +1013,17 @@ pub fn commit_disable(
     ctx: &CommitContext,
     override_issues: bool,
 ) -> Result<CommitReport, CommitError> {
+    tracing::info!(identity = plan.identity, "committing disable");
+    let result = commit_disable_inner(plan, ctx, override_issues);
+    log_commit("disable", &result);
+    result
+}
+
+fn commit_disable_inner(
+    plan: DisablePlan,
+    ctx: &CommitContext,
+    override_issues: bool,
+) -> Result<CommitReport, CommitError> {
     refuse_if_blocked(&plan.issues, override_issues)?;
     let game = refuse_if_game_running(ctx.detect_game)?;
     let to_disable = [plan.identity];
@@ -950,6 +1044,17 @@ pub fn commit_disable(
 }
 
 pub fn commit_uninstall(
+    plan: UninstallPlan,
+    ctx: &CommitContext,
+    override_issues: bool,
+) -> Result<CommitReport, CommitError> {
+    tracing::info!(folder = plan.folder, "committing uninstall");
+    let result = commit_uninstall_inner(plan, ctx, override_issues);
+    log_commit("uninstall", &result);
+    result
+}
+
+fn commit_uninstall_inner(
     plan: UninstallPlan,
     ctx: &CommitContext,
     override_issues: bool,
@@ -982,6 +1087,17 @@ pub fn commit_uninstall(
 /// Replaces the folder in place and keeps the enabled state: neither `to_enable` nor
 /// `to_disable` is touched, so whatever `plugins.txt` already said for this identity stands.
 pub fn commit_update(
+    plan: UpdatePlan,
+    ctx: &CommitContext,
+    override_issues: bool,
+) -> Result<CommitReport, CommitError> {
+    tracing::info!(folder = plan.folder, "committing update");
+    let result = commit_update_inner(plan, ctx, override_issues);
+    log_commit("update", &result);
+    result
+}
+
+fn commit_update_inner(
     plan: UpdatePlan,
     ctx: &CommitContext,
     override_issues: bool,
@@ -1031,7 +1147,21 @@ pub fn commit_update_all(
     ctx: &CommitContext,
     override_issues: bool,
 ) -> Result<CommitReport, CommitError> {
-    let all_issues: Vec<Issue> = plans.iter().flat_map(|p| p.issues.iter().cloned()).collect();
+    tracing::info!(count = plans.len(), "committing update-all");
+    let result = commit_update_all_inner(plans, ctx, override_issues);
+    log_commit("update-all", &result);
+    result
+}
+
+fn commit_update_all_inner(
+    plans: Vec<UpdatePlan>,
+    ctx: &CommitContext,
+    override_issues: bool,
+) -> Result<CommitReport, CommitError> {
+    let all_issues: Vec<Issue> = plans
+        .iter()
+        .flat_map(|p| p.issues.iter().cloned())
+        .collect();
     refuse_if_blocked(&all_issues, override_issues)?;
     let game = refuse_if_game_running(ctx.detect_game)?;
 

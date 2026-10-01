@@ -609,17 +609,23 @@ pub fn launch_command(install: &GameInstall, os: Os) -> Option<Command> {
 /// Starts the game. On Linux a Steam launch falls back to `xdg-open` when the
 /// `steam` command isn't on the PATH.
 pub fn launch(install: &GameInstall) -> io::Result<Child> {
+    tracing::info!(launch = ?install.launch, "launching game");
     let os = Os::current();
     let mut command = launch_command(install, os)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no known way to launch"))?;
-    match command.spawn() {
+    let result = match command.spawn() {
         Err(e)
             if e.kind() == io::ErrorKind::NotFound
                 && os == Os::Linux
                 && install.launch == Launch::Steam =>
         {
+            tracing::info!("steam command not found, falling back to xdg-open");
             Command::new("xdg-open").arg(STEAM_URL).spawn()
         }
         result => result,
+    };
+    if let Err(e) = &result {
+        tracing::error!(error = %e, "failed to launch game");
     }
+    result
 }

@@ -444,9 +444,17 @@ mod tests {
         let renamed = store.rename("Main", " Primary ").unwrap();
         assert_eq!(renamed, "Primary");
         assert!(!store.profiles.contains_key("Main"));
-        assert_eq!(store.active.as_deref(), Some("Primary"), "active follows the rename");
+        assert_eq!(
+            store.active.as_deref(),
+            Some("Primary"),
+            "active follows the rename"
+        );
         assert_eq!(store.active_profile(), Some(&profile(&[("A", None)])));
-        assert_eq!(store.profiles.get("Alt"), Some(&profile(&[("B", None)])), "other profiles untouched");
+        assert_eq!(
+            store.profiles.get("Alt"),
+            Some(&profile(&[("B", None)])),
+            "other profiles untouched"
+        );
     }
 
     #[test]
@@ -462,7 +470,10 @@ mod tests {
         let mut store = ProfileStore::default();
         store.insert("Main", Profile::default()).unwrap();
         store.insert("Alt", Profile::default()).unwrap();
-        assert!(matches!(store.rename("Main", "  "), Err(ProfileError::EmptyName)));
+        assert!(matches!(
+            store.rename("Main", "  "),
+            Err(ProfileError::EmptyName)
+        ));
         assert!(matches!(
             store.rename("Main", "Alt"),
             Err(ProfileError::DuplicateName(_))
