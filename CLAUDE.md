@@ -156,6 +156,13 @@ dependencies
 **H. Game install detection: all install types supported**, the same coverage expectation as the Valheim tooling: native per-OS paths, Steam (Windows/macOS/Linux), Flatpak, standalone/manual installs, and custom `-c` config paths. Auto-detect, let the user override, allow multiple installs. Flatpak's config dir is confirmed as `~/.var/app/io.github.endless_sky.endless_sky/data/endless-sky/`: the Flathub manifest (`io.github.endless_sky.endless_sky.json`) sets no `--filesystem` override and no custom environment, so Flatpak's own automatic XDG redirection applies and `XDG_DATA_HOME` resolves to `<app>/data` inside the sandbox. Game version is read via `endless-sky --version`, confirmed in `source/main.cpp`'s `PrintVersion()`: it writes `Endless Sky ver. <version>` to stderr for every install type (native, Steam, standalone). From 0.11.0 onward the version string is `GameVersion::ToString()` (always `major.minor.release.patch`, `-alpha` suffixed for non-full-release builds, confirmed in `source/GameVersion.cpp`); before 0.11.0 it was a hardcoded literal with an inconsistent digit count (e.g. `0.10.0`, `0.10.13.1`). The parser only looks for the `Endless Sky ver.` prefix, so it doesn't depend on the digit count either way.
 
 **I. Offline and caching.** Cache catalog and icons with HTTP ETags. Enable/disable and profiles must work fully offline.
+- The cache lives in a cache directory the caller supplies (the manager's own app-data, never the game's own directories): `catalog-body.json` and `catalog-meta.json` (the ETag and fetch time) at its root, icons under an `icons/` subdirectory.
+- `fetch_cached` sends the stored ETag as `If-None-Match`. A 304 reuses the cached body (`FetchSource::NotModified`); a 200 parses, replaces the cache, and returns `FetchSource::Fresh`; a failed request falls back to the cached body as `FetchSource::Offline { error }` when a cache exists, otherwise errors.
+- A 200 with a body that fails to parse as the catalog schema is treated as a catalog-source bug: it returns `Err` and leaves the existing good cache (body and ETag) untouched, never overwritten with something unparseable.
+- A missing or corrupt cache file (either the body or the metadata) is treated as no cache at all; it never crashes, and the next fetch just goes out with no `If-None-Match`.
+- Icon URLs embed the plugin version, so they're cached forever, keyed by the sha256 hex digest of the URL (with a plain image extension kept on the filename when the URL has one). A URL already on disk is never re-fetched. `prune_icons` deletes cached icons whose URL is no longer referenced by the current catalog.
+- All HTTP goes through an injectable `HttpGet` trait so tests never touch the network; `fetch_cached`/`cached_icon` wire in the real ureq-backed client, `fetch_cached_with`/`cached_icon_with` take any `&dyn HttpGet` and carry the actual logic. HTTPS-only and a hard body size cap (20 MB catalog, 5 MB icon) apply the same as `download.rs`. Writes are atomic (temp file + rename) via `crate::files::write_atomic`.
+(Implemented in `esmm-core/src/catalog.rs`; tests in `esmm-core/tests/catalog_cache.rs`, including one `#[ignore]`d live test against the real catalog URL.)
 
 **J. Code layout.** A pure Rust core library with no Tauri dependency (catalog, DataNode parser/writer, installer, resolver, profiles), testable on this Linux box with fixtures from real plugins; a thin Tauri shell exposing commands; a React UI on top.
 
@@ -177,7 +184,7 @@ EndlessSky/
         │   ├── datanode.rs          # DataNode parser/writer (mirrors DataFile.cpp / DataWriter.cpp)
         │   ├── plugin_meta.rs       # plugin.txt -> PluginMeta (name, version, deps...)
         │   ├── plugin_state.rs      # plugins.txt text parse/write (1/0 states)
-        │   ├── catalog.rs           # catalog JSON parse + fetch (ureq)
+        │   ├── catalog.rs           # catalog JSON parse + fetch (ureq), plus the ETag catalog/icon cache (decision I)
         │   ├── download.rs          # streaming HTTPS download: progress, cancel, size cap, SHA-256
         │   ├── install.rs           # zip extract (zip-slip safe), plugin root finding, atomic install/uninstall
         │   ├── records.rs           # the manager's install records (JSON, app-data dir)
@@ -189,6 +196,7 @@ EndlessSky/
             ├── real_fixtures.rs     # tests against real captured files
             ├── install.rs           # installer tests with zips built on the fly
             ├── game_install.rs      # install detection against fake homes/roots in temp dirs
+            ├── catalog_cache.rs     # catalog/icon cache tests against a fake HttpGet, plus one #[ignore]d live test
             └── fixtures/            # catalog snapshot, 5 real plugin.txt files, game-install/ (VDF/ACF samples)
 ```
 
