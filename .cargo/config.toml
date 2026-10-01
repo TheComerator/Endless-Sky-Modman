@@ -1,0 +1,4 @@
+# ts-rs writes the frontend's TypeScript bindings here whenever `cargo test` runs the
+# app crate's tests (see app/src-tauri/src/views.rs).
+[env]
+TS_RS_EXPORT_DIR = { value = "app/src/bindings", relative = true }
