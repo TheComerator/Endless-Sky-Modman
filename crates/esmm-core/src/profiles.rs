@@ -202,11 +202,13 @@ impl ProfileStore {
     }
 
     /// A newly installed plugin joins the active profile, if any, as enabled.
+    /// A catalog name already known for it is kept when `catalog_name` is None.
     pub fn on_installed(&mut self, identity: &str, catalog_name: Option<&str>) {
         if let Some(profile) = self.active_profile_mut() {
-            profile
-                .enabled
-                .insert(identity.to_string(), catalog_name.map(str::to_string));
+            let entry = profile.enabled.entry(identity.to_string()).or_default();
+            if let Some(name) = catalog_name {
+                *entry = Some(name.to_string());
+            }
         }
     }
 
@@ -343,6 +345,14 @@ mod tests {
         assert_eq!(
             store.active_profile(),
             Some(&profile(&[("X", Some("X-Cat"))]))
+        );
+
+        store.on_installed("X", None);
+        store.on_installed("Y", None);
+        assert_eq!(
+            store.active_profile(),
+            Some(&profile(&[("X", Some("X-Cat")), ("Y", None)])),
+            "a known catalog name is not erased"
         );
     }
 

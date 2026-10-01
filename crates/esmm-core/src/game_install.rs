@@ -373,10 +373,7 @@ fn detect_steam(env: &DetectEnv) -> Vec<GameInstall> {
 /// both the current format (`"0" { "path" "..." }`) and the old one (`"1" "D:\\Steam"`).
 pub fn parse_library_folders(text: &str) -> Vec<PathBuf> {
     let root = parse_vdf(text);
-    let Some(Vdf::Block(entries)) = root
-        .get("libraryfolders")
-        .or_else(|| root.get("LibraryFolders"))
-    else {
+    let Some(Vdf::Block(entries)) = root.get("libraryfolders") else {
         return Vec::new();
     };
     entries
