@@ -260,6 +260,27 @@ pub fn install(
     tmp_dir: &Path,
     folder_name: &str,
 ) -> Result<Installed, InstallError> {
+    // A plain `fs::rename` function item doesn't coerce to `impl Fn(&Path, &Path)` here: rustc
+    // picks one concrete lifetime instead of keeping it generic over all of them (the closure
+    // wrapper forces the right, higher-ranked signature).
+    install_with(
+        |from, to| fs::rename(from, to),
+        staged_root,
+        plugins_dir,
+        tmp_dir,
+        folder_name,
+    )
+}
+
+/// `install` with an injectable rename. Moving the old copy out and putting it back use the
+/// same two directories, so no filesystem setup can make only the restore fail.
+fn install_with(
+    rename: impl Fn(&Path, &Path) -> io::Result<()>,
+    staged_root: &Path,
+    plugins_dir: &Path,
+    tmp_dir: &Path,
+    folder_name: &str,
+) -> Result<Installed, InstallError> {
     check_folder_name(folder_name)?;
     if !is_plugin(staged_root) {
         return Err(InstallError::NotAPlugin);
@@ -273,14 +294,14 @@ pub fn install(
             .prefix("old-")
             .tempdir_in(tmp_dir)?;
         let old_path = holder.path().join(folder_name);
-        fs::rename(&dest, &old_path)?;
+        rename(&dest, &old_path)?;
         Some((holder, old_path))
     } else {
         None
     };
-    if let Err(install) = fs::rename(staged_root, &dest) {
+    if let Err(install) = rename(staged_root, &dest) {
         if let Some((holder, old_path)) = old
-            && let Err(restore) = fs::rename(&old_path, &dest)
+            && let Err(restore) = rename(&old_path, &dest)
         {
             // Dropping the holder would delete the user's only copy.
             let _ = holder.keep();
@@ -328,4 +349,44 @@ pub fn uninstall(
     fs::rename(&dest, holder.path().join(folder_name))?;
     holder.close()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn failed_restore_keeps_the_old_copy_and_reports_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugins = dir.path().join("plugins");
+        let tmp = dir.path().join(TMP_DIR_NAME);
+        fs::create_dir_all(plugins.join("Foo/data")).unwrap();
+        fs::write(plugins.join("Foo/data/x.txt"), "old").unwrap();
+        let staged = tmp.join("staged");
+        fs::create_dir_all(staged.join("data")).unwrap();
+
+        // Moving the old copy out works; the swap and the restore both fail.
+        let calls = Cell::new(0);
+        let rename = |from: &Path, to: &Path| {
+            calls.set(calls.get() + 1);
+            if calls.get() == 1 {
+                fs::rename(from, to)
+            } else {
+                Err(io::Error::other("injected"))
+            }
+        };
+        let err = install_with(rename, &staged, &plugins, &tmp, "Foo").unwrap_err();
+        let InstallError::RestoreFailed { old_copy, .. } = err else {
+            panic!("{err:?}");
+        };
+        assert_eq!(calls.get(), 3);
+        assert!(old_copy.starts_with(&tmp));
+        assert_eq!(
+            fs::read_to_string(old_copy.join("data/x.txt")).unwrap(),
+            "old"
+        );
+        assert!(!plugins.join("Foo").exists());
+        assert!(staged.is_dir(), "the staged copy is untouched");
+    }
 }
