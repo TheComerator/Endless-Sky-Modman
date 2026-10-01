@@ -51,3 +51,23 @@ Format: WHAT went wrong, WHY it went wrong, HOW to prevent it.
 **Why it went wrong:** Mentally conflating "the catalog entry for this dependency" with "the dependency," without checking that the normalization rule (lowercase, alphanumeric-only) actually bridges the two strings used in the fixture.
 
 **How to prevent it:** When building a fixture catalog entry that something else's `requires` needs to resolve, make the catalog name either exactly equal to the identity or normalize-identical to it (the real-world case is `Jimmys-Ship-Emporium` / `Jimmy's Ship Emporium`, which *do* normalize the same). Only use a deliberately different catalog name in a test that is specifically exercising `NoMatch`, `Ambiguous`, or `IdentityMismatch`.
+
+---
+
+## Install records never carried the download's SHA-256, and no test noticed (2026-10-01)
+
+**What went wrong:** `manager::stage_download` called the `Fetcher` but threw away the returned `Downloaded`, then hard-coded `sha256: String::new()`. Every install record written since `manager.rs` landed had an empty hash, although decision A requires it. Found while reading the real `manager.rs` API to wrap it in the Tauri shell, not by any test: the test `Fetcher` even returned a recognizable `"test-sha"`, but no test asserted that it reached the record.
+
+**Why it went wrong:** The tests checked the fields each test was *about* (identity, folder, enabled state) and nothing asserted the field that only mattered for a requirement stated elsewhere (decision A's record contents). A placeholder (`String::new()`) written while wiring things up was never revisited.
+
+**How to prevent it:** When a design decision lists what a record must contain, have at least one end-to-end test assert every listed field, with fixture values that can't be confused with defaults (`"test-sha"`, not `""`). Treat a literal `String::new()`/`Default::default()` in a constructor for persisted data as a review flag. Read the wrapped code itself before building on it, not only its docs.
+
+---
+
+## The Tauri window never appeared under Xvfb, with no error at all (2026-10-01)
+
+**What went wrong:** `target/debug/esmm` under `Xvfb` ran without errors or crashes, but the screen stayed black: only GTK's 10x10 leader window existed, no main window was ever created and no `WebKitWebProcess` started. Sandbox, compositing and DMABUF environment switches changed nothing.
+
+**Why it went wrong:** The shell inherited `DBUS_SESSION_BUS_ADDRESS` pointing at the host's real user session bus (`/run/user/1000/bus`). GTK/WebKitGTK waited on a desktop-portal call over that bus that never got an answer in a session with no desktop, so window creation stalled silently. Thread states (`/proc/<pid>/task/*/wchan`) showed the main loop idling in `poll`, not a crash.
+
+**How to prevent it:** Run headless GTK/WebKit apps inside their own session bus: `DISPLAY=:99 dbus-run-session -- target/debug/esmm`. With that, the window mapped immediately and `xdg-desktop-portal-gtk` started inside the private bus. When a GUI app "runs" headless but shows nothing, list its X windows with `xdotool search --name .` and check whether its child processes exist before trying renderer flags.

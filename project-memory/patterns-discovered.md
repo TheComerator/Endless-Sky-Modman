@@ -47,3 +47,23 @@ To test a multi-step commit failing partway (one plugin's install fails after an
 ## Give `commit`-style functions a swappable `fn() -> T` field for state that's normally read from the live system (2026-10-01)
 
 `manager::commit` must refuse before touching anything if the game process is `Running`, but the real check (`game_state::detect_game_process`) reads the live process list -- nothing a test can control. `CommitContext` carries `detect_game: fn() -> GameProcess` (defaulted to the real function by `CommitContext::new`), and a test just sets the field to a `fn always_running() -> GameProcess { GameProcess::Running }`. A plain function pointer (not a closure trait object) is enough since tests only need fixed return values, and it keeps the context `Copy`-friendly and simple.
+
+## Keep the Tauri layer a thin wrapper over a plain, testable service (2026-10-01)
+
+`app/src-tauri/src/shell.rs` (`Shell`) holds every behavior and knows nothing about Tauri; `commands.rs` only moves calls onto the right thread and returns `Result<_, CmdError>`. Everything the shell does to the outside world comes in through a `Deps` struct (the `Fetcher`, a catalog-fetching closure, and `fn` pointers for game detection, `--version` and launching), so `src/tests.rs` drives whole plan -> commit lifecycles against temp dirs in well under a second with no webview. Add one test through `tauri::test`'s mock runtime (`mock_builder()` + `get_ipc_response` with an `InvokeRequest` carrying `INVOKE_KEY`) on top: it's the only thing that catches a renamed command argument, because Tauri silently maps JavaScript's `planId`/`catalogName` onto `plan_id`/`catalog_name`. Register commands in one `with_commands(builder)` function shared by `run()` and that test so they can't diverge.
+
+## Generate the frontend's TypeScript types from the Rust views with ts-rs (2026-10-01)
+
+Derive `ts_rs::TS` with `#[ts(export)]` on every type that crosses IPC; ts-rs honors serde's `rename_all`, `tag` and `rename_all_fields`, so the TypeScript matches the JSON exactly (tagged enums become discriminated unions the UI can `switch` on). The bindings are written when `cargo test` runs; point them at the frontend with a workspace `.cargo/config.toml` `[env] TS_RS_EXPORT_DIR = { value = "app/src/bindings", relative = true }` so it works from any directory in the repo. Mark `u64` fields `#[ts(type = "number")]` (ts-rs defaults to `bigint`, which `JSON.parse` never produces). Commit the generated files; a diff after `cargo test` is the signal that the contract changed.
+
+## Make a slow, possibly-stalled operation cancellable by abandoning its thread, with ticket ids (2026-10-01)
+
+ureq can block inside `read()` forever, so a cancel flag alone can't stop a stalled download. The planning command spawns a dedicated `std::thread` and awaits it with `tokio::select!` against a `oneshot` abort channel; cancelling sends on (or simply replaces, which drops) the abort sender, and the command returns at once. The abandoned thread finishes whenever it finishes, and `Shell::finish` only stores its result if the run's `Ticket` (a monotonic id plus a cancel flag) is still the current one; otherwise the result is dropped, which also deletes its staged `TempDir`. The thread never holds the commit lock, so a stuck one can't block later operations. The same increasing id lets the frontend ignore progress events from abandoned runs (`event.planId < minPlanId`).
+
+## Per-test control of a `fn() -> T` seam with a thread-local (2026-10-01)
+
+A `fn`-pointer seam (here `Deps::detect_game`) can't capture per-test state, and a `static` would race between tests running on parallel threads. When the code under test calls the seam on the test's own thread (commit refusal checks do), back it with a `thread_local!` `Cell<bool>` that each test flips: `GAME_RUNNING.with(|r| r.set(true))`. See `game_running_refuses_without_consuming_the_plan` in `app/src-tauri/src/tests.rs`.
+
+## See and drive a Tauri app on a display-less VPS (2026-10-01)
+
+`npm run tauri build -- --debug --no-bundle` (about a minute once dependencies are built), then: `Xvfb :99 -screen 0 1280x860x24 &`, `DISPLAY=:99 dbus-run-session -- target/debug/esmm &` (the private bus is required, see lessons-learned), screenshot with `ffmpeg -f x11grab -video_size 1200x800 -i :99 -frames:v 1 shot.png`, and click/type with `xdotool mousemove X Y click 1` / `xdotool type`. Point `HOME` at a throwaway dir with a fake `~/.local/share/endless-sky/plugins/` (folders with a `data/` subfolder and an optional `plugin.txt`) so detection finds a "Standalone" install and the real home is never touched; the live catalog and real plugin downloads still work through it.
