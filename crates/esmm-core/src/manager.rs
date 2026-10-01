@@ -160,8 +160,9 @@ fn stage_download(ctx: &PlanContext, entry: &CatalogEntry) -> Result<StagedPlugi
     let staging =
         install::new_staging_dir(&install::tmp_dir(ctx.config_dir)).map_err(|e| e.to_string())?;
     let zip_path = staging.path().join("download.zip");
-    ctx.fetcher
-        .fetch(entry, &zip_path, &mut |_, _| {}, &AtomicBool::new(false))?;
+    let downloaded =
+        ctx.fetcher
+            .fetch(entry, &zip_path, &mut |_, _| {}, &AtomicBool::new(false))?;
     let extract_dir = staging.path().join("extracted");
     install::extract_zip(&zip_path, &extract_dir, install::ExtractLimits::default())
         .map_err(|e| e.to_string())?;
@@ -182,7 +183,7 @@ fn stage_download(ctx: &PlanContext, entry: &CatalogEntry) -> Result<StagedPlugi
         meta,
         version: entry.version.clone(),
         source_url: entry.url.clone(),
-        sha256: String::new(),
+        sha256: downloaded.sha256,
     })
 }
 
