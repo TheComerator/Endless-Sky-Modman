@@ -1,0 +1,24 @@
+"AppState"
+{
+	"appid"		"404410"
+	"universe"		"1"
+	"LauncherPath"		"C:\\Program Files (x86)\\Steam\\steam.exe"
+	"name"		"Endless Sky"
+	"StateFlags"		"4"
+	"installdir"		"Endless Sky"
+	"LastUpdated"		"1759276800"
+	"SizeOnDisk"		"412938571"
+	"buildid"		"19283746"
+	"InstalledDepots"
+	{
+		"404413"
+		{
+			"manifest"		"1234567890123456789"
+			"size"		"402938571"
+		}
+	}
+	"UserConfig"
+	{
+		"language"		"english"
+	}
+}

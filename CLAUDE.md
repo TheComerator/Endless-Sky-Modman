@@ -153,7 +153,7 @@ dependencies
 
 **G. Downloads.** Streaming with progress and cancel. Zip-slip protection (reject entries escaping the target), size limits, HTTPS only. Validate the extracted folder with the game's own `IsPlugin` rule before committing.
 
-**H. Game install detection: all install types supported**, the same coverage expectation as the Valheim tooling: native per-OS paths, Steam (Windows/macOS/Linux), Flatpak, standalone/manual installs, and custom `-c` config paths. Auto-detect, let the user override, allow multiple installs. Flatpak's sandboxed config path is believed to be under `~/.var/app/io.github.endless_sky.endless_sky/` but is NOT yet verified. Game version for the `game version` check likely via `endless-sky --version` (not yet verified per install type).
+**H. Game install detection: all install types supported**, the same coverage expectation as the Valheim tooling: native per-OS paths, Steam (Windows/macOS/Linux), Flatpak, standalone/manual installs, and custom `-c` config paths. Auto-detect, let the user override, allow multiple installs. Flatpak's config dir is confirmed as `~/.var/app/io.github.endless_sky.endless_sky/data/endless-sky/`: the Flathub manifest (`io.github.endless_sky.endless_sky.json`) sets no `--filesystem` override and no custom environment, so Flatpak's own automatic XDG redirection applies and `XDG_DATA_HOME` resolves to `<app>/data` inside the sandbox. Game version is read via `endless-sky --version`, confirmed in `source/main.cpp`'s `PrintVersion()`: it writes `Endless Sky ver. <version>` to stderr for every install type (native, Steam, standalone). From 0.11.0 onward the version string is `GameVersion::ToString()` (always `major.minor.release.patch`, `-alpha` suffixed for non-full-release builds, confirmed in `source/GameVersion.cpp`); before 0.11.0 it was a hardcoded literal with an inconsistent digit count (e.g. `0.10.0`, `0.10.13.1`). The parser only looks for the `Endless Sky ver.` prefix, so it doesn't depend on the digit count either way.
 
 **I. Offline and caching.** Cache catalog and icons with HTTP ETags. Enable/disable and profiles must work fully offline.
 
@@ -183,11 +183,13 @@ EndlessSky/
         │   ├── records.rs           # the manager's install records (JSON, app-data dir)
         │   ├── game_state.rs        # game-running detection, safe plugins.txt read/write with backup
         │   ├── profiles.rs          # profiles: snapshot, apply, drift, default profile (JSON, app-data dir)
+        │   ├── game_install.rs      # install detection (native/Steam/Flatpak/custom) and launch (decision H)
         │   └── files.rs             # internal: atomic writes and JSON load/save
         └── tests/
             ├── real_fixtures.rs     # tests against real captured files
             ├── install.rs           # installer tests with zips built on the fly
-            └── fixtures/            # catalog snapshot + 5 real plugin.txt files
+            ├── game_install.rs      # install detection against fake homes/roots in temp dirs
+            └── fixtures/            # catalog snapshot, 5 real plugin.txt files, game-install/ (VDF/ACF samples)
 ```
 
 The Tauri shell (`app/`) and React UI are not created yet.
@@ -200,12 +202,12 @@ The Tauri shell (`app/`) and React UI are not created yet.
 
 ## Current Status
 
-- **Last worked on:** 2026-10-01 (core slice 3: review fixes for install/download, game-running detection and safe `plugins.txt` writes (F), profiles (E); all tests, clippy and fmt clean)
-- **Stage:** Core library: catalog, DataNode, plugin metadata/state, download, install/uninstall, install records, `plugins.txt` safety, and profiles are done. No UI yet.
-- **Next steps (core), in order:** game install detection per platform (H); dependency resolver and install orchestration that ties download, install, records, and profiles together (C); catalog and icon ETag cache (I); then the Tauri shell.
+- **Last worked on:** 2026-10-01 (core slice 4: game install detection and launch across native/Steam/Flatpak/custom installs (H); all tests, clippy and fmt clean)
+- **Stage:** Core library: catalog, DataNode, plugin metadata/state, download, install/uninstall, install records, `plugins.txt` safety, profiles, and game install detection/launch are done. No UI yet.
+- **Next steps (core), in order:** dependency resolver and install orchestration that ties download, install, records, and profiles together (C); catalog and icon ETag cache (I); then the Tauri shell.
 - **Next steps (app):** install Tauri's Linux system libraries (needs `sudo apt`: `libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev pkg-config`), then scaffold the Tauri shell and React UI.
 - **Known limitation:** ureq 3.4.2 has no per-read or idle timeout, so a download that stalls mid-read blocks inside `read()` and can't be cancelled from inside `download_to` (the cancel flag is only checked between reads). The app layer must run downloads on a thread it can abandon.
-- **Still unverified:** Flatpak config path; `--version` output across install types.
+- **Known gaps (game install detection):** Steam-as-Flatpak is not detected; AppImages require the user to add them manually via `GameInstall::standalone`. Both acceptable for now.
 - **Undecided:** project license (left out of Cargo.toml on purpose; Jon's JoyForge is MIT).
 
 ---
