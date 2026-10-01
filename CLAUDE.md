@@ -173,7 +173,7 @@ EndlessSky/
 
 The Tauri shell (`app/`) and React UI are not created yet.
 
-**Repo:** `git@github.com:TheComerator/EndlessSky.git` (private, created 2026-10-01). Same convention as JoyForge: solo committer, small atomic commits straight to `main`, never force-push. Repo-local identity `TheComerator <thecomerator@gmail.com>`. `gh` CLI is installed at `~/.local/bin/gh` and logged in as TheComerator.
+**Repo:** `git@github.com:TheComerator/Endless-Sky-Modman.git` (private, created 2026-10-01 as EndlessSky, renamed 2026-10-01). Same convention as JoyForge: solo committer, small atomic commits straight to `main`, never force-push. Repo-local identity `TheComerator <thecomerator@gmail.com>`. `gh` CLI is installed at `~/.local/bin/gh` and logged in as TheComerator.
 
 **Dev environment:** Rust installed per-user via rustup (`source ~/.cargo/env`). Build with `CARGO_BUILD_JOBS=2` to keep memory down while Valheim is running. Run tests with `cargo test`; the live network test with `cargo test -- --ignored`. Keep `cargo clippy --all-targets` and `cargo fmt --check` clean.
 
