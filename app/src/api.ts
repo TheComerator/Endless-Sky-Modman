@@ -28,6 +28,7 @@ export const api = {
 
   planInstall: (catalogName: string) => invoke<PlanView>("plan_install", { catalogName }),
   planUpdate: (folder: string) => invoke<PlanView>("plan_update", { folder }),
+  planUpdateAll: () => invoke<PlanView>("plan_update_all"),
   planEnable: (identity: string) => invoke<PlanView>("plan_enable", { identity }),
   planDisable: (identity: string) => invoke<PlanView>("plan_disable", { identity }),
   planUninstall: (folder: string) => invoke<PlanView>("plan_uninstall", { folder }),
@@ -40,6 +41,8 @@ export const api = {
     invoke<CommitView>("commit_plan", { planId, overrideIssues }),
 
   createProfile: (name: string) => invoke<string>("create_profile", { name }),
+  renameProfile: (oldName: string, newName: string) =>
+    invoke<string>("rename_profile", { oldName, newName }),
   updateActiveProfile: () => invoke<void>("update_active_profile"),
   deleteProfile: (name: string) => invoke<void>("delete_profile", { name }),
 };

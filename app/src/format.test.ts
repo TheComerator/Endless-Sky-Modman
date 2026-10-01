@@ -87,8 +87,14 @@ describe("steps and plans", () => {
 
   it("titles and commit labels", () => {
     expect(planTitle({ kind: "applyProfile", target: "Main" })).toBe("Switch to profile Main");
+    expect(planTitle({ kind: "updateAll", target: "3 plugins" })).toBe("Update all 3 plugins");
     expect(commitLabel("uninstall", true)).toBe("Uninstall anyway");
     expect(commitLabel("applyProfile", false)).toBe("Switch");
+    expect(commitLabel("updateAll", true)).toBe("Update all anyway");
+  });
+
+  it("updateAll always needs review, same as every non-enable/disable plan", () => {
+    expect(needsReview(plan({ kind: "updateAll" }))).toBe(true);
   });
 
   it("only skips review for clean enable/disable plans", () => {

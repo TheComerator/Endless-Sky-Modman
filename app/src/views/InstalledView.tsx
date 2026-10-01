@@ -105,6 +105,15 @@ export function InstalledView({
           {state.plugins.filter((p) => p.enabled).length} enabled
           {updates ? ` · ${updates} update${updates === 1 ? "" : "s"} available` : ""}
         </span>
+        {updates > 0 && (
+          <button
+            className="primary"
+            disabled={busy}
+            onClick={() => void planFlow.start({ kind: "updateAll" })}
+          >
+            Update all {updates}
+          </button>
+        )}
         <button onClick={() => void loadCatalog(true)} disabled={catalogLoading}>
           {catalogLoading ? "Checking…" : "Check for updates"}
         </button>
