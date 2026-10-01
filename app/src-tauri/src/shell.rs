@@ -774,6 +774,29 @@ impl Shell {
         Self::check_live(ticket)?;
         let fetcher = self.plan_fetcher(ticket);
         let plan = manager::plan_install(entry, &snap.plan_ctx(&fetcher));
+        Self::check_live(ticket)?;
+        // The plugin asked for couldn't even be downloaded: there's nothing to review or
+        // override, just an error to show (and retry).
+        if !plan
+            .steps
+            .iter()
+            .any(|s| matches!(s, PlanStep::Install(staged) if staged.catalog_name == catalog_name))
+        {
+            let error = plan
+                .issues
+                .iter()
+                .find_map(|issue| match issue {
+                    Issue::CatalogDownloadFailed {
+                        catalog_name: name,
+                        error,
+                    } if name == catalog_name => Some(error.clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| "unknown error".into());
+            return Err(CmdError::Network {
+                message: format!("Couldn't download {catalog_name}: {error}"),
+            });
+        }
         let root_identity = plan.steps.iter().rev().find_map(|s| match s {
             PlanStep::Install(staged) if staged.catalog_name == catalog_name => {
                 Some(staged.identity.clone())
