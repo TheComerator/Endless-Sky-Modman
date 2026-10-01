@@ -185,6 +185,30 @@ impl ProfileStore {
         Ok(name.to_string())
     }
 
+    /// Renames `old` to `new` (trimmed), preserving its contents and active status. A no-op
+    /// returning `old` unchanged if `new` trims to the same name.
+    pub fn rename(&mut self, old: &str, new: &str) -> Result<String, ProfileError> {
+        let new = new.trim();
+        if new.is_empty() {
+            return Err(ProfileError::EmptyName);
+        }
+        if new == old {
+            return Ok(old.to_string());
+        }
+        if !self.profiles.contains_key(old) {
+            return Err(ProfileError::NotFound(old.to_string()));
+        }
+        if self.profiles.contains_key(new) {
+            return Err(ProfileError::DuplicateName(new.to_string()));
+        }
+        let profile = self.profiles.remove(old).expect("checked above");
+        self.profiles.insert(new.to_string(), profile);
+        if self.active.as_deref() == Some(old) {
+            self.active = Some(new.to_string());
+        }
+        Ok(new.to_string())
+    }
+
     pub fn set_active(&mut self, name: &str) -> Result<(), ProfileError> {
         if !self.profiles.contains_key(name) {
             return Err(ProfileError::NotFound(name.to_string()));
@@ -408,6 +432,48 @@ mod tests {
             store.update_active(&set(&[]), &states(&[]), &records()),
             Err(ProfileError::NoActiveProfile)
         ));
+    }
+
+    #[test]
+    fn rename_preserves_contents_and_active_status() {
+        let mut store = ProfileStore::default();
+        store.insert("Main", profile(&[("A", None)])).unwrap();
+        store.insert("Alt", profile(&[("B", None)])).unwrap();
+        store.set_active("Main").unwrap();
+
+        let renamed = store.rename("Main", " Primary ").unwrap();
+        assert_eq!(renamed, "Primary");
+        assert!(!store.profiles.contains_key("Main"));
+        assert_eq!(store.active.as_deref(), Some("Primary"), "active follows the rename");
+        assert_eq!(store.active_profile(), Some(&profile(&[("A", None)])));
+        assert_eq!(store.profiles.get("Alt"), Some(&profile(&[("B", None)])), "other profiles untouched");
+    }
+
+    #[test]
+    fn rename_to_its_own_name_is_a_no_op() {
+        let mut store = ProfileStore::default();
+        store.insert("Main", profile(&[("A", None)])).unwrap();
+        assert_eq!(store.rename("Main", " Main ").unwrap(), "Main");
+        assert_eq!(store.profiles.len(), 1);
+    }
+
+    #[test]
+    fn rename_is_validated() {
+        let mut store = ProfileStore::default();
+        store.insert("Main", Profile::default()).unwrap();
+        store.insert("Alt", Profile::default()).unwrap();
+        assert!(matches!(store.rename("Main", "  "), Err(ProfileError::EmptyName)));
+        assert!(matches!(
+            store.rename("Main", "Alt"),
+            Err(ProfileError::DuplicateName(_))
+        ));
+        assert!(matches!(
+            store.rename("Gone", "New"),
+            Err(ProfileError::NotFound(_))
+        ));
+        // rejected renames change nothing
+        assert!(store.profiles.contains_key("Main"));
+        assert!(store.profiles.contains_key("Alt"));
     }
 
     #[test]
