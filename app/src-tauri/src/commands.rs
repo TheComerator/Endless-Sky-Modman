@@ -34,15 +34,23 @@ impl AppState {
     }
 }
 
-async fn blocking<T, F>(state: &AppState, f: F) -> CmdResult<T>
+/// Runs `f` off the async runtime and logs the command's entry/exit at the IPC boundary -
+/// what the frontend asked for and what it got back, independent of whatever `f` itself logs.
+async fn blocking<T, F>(state: &AppState, name: &'static str, f: F) -> CmdResult<T>
 where
     T: Send + 'static,
     F: FnOnce(&Shell) -> CmdResult<T> + Send + 'static,
 {
+    tracing::info!(command = name, "command invoked");
     let shell = state.shell.clone();
-    tauri::async_runtime::spawn_blocking(move || f(&shell))
+    let result = tauri::async_runtime::spawn_blocking(move || f(&shell))
         .await
-        .map_err(|e| CmdError::io(format!("internal error: {e}")))?
+        .map_err(|e| CmdError::io(format!("internal error: {e}")));
+    let result = result.and_then(|r| r);
+    if let Err(e) = &result {
+        tracing::warn!(command = name, error = ?e, "command failed");
+    }
+    result
 }
 
 /// Runs one planning operation on its own thread, and returns as soon as it either finishes
@@ -54,10 +62,11 @@ where
 /// sees its ticket was cancelled and drops the plan (deleting the staged download) instead
 /// of offering it. Planning never takes the commit lock, so an abandoned thread can't block
 /// anything else.
-async fn plan<F>(state: &AppState, f: F) -> CmdResult<PlanView>
+async fn plan<F>(state: &AppState, name: &'static str, f: F) -> CmdResult<PlanView>
 where
     F: FnOnce(&Shell, &Ticket) -> CmdResult<PlanView> + Send + 'static,
 {
+    tracing::info!(command = name, "command invoked");
     let shell = state.shell.clone();
     let ticket = shell.begin_planning();
     let (abort_tx, abort_rx) = oneshot::channel::<()>();
@@ -69,34 +78,46 @@ where
         .spawn(move || {
             let _ = tx.send(f(&shell, &ticket));
         })?;
-    tokio::select! {
+    let result = tokio::select! {
         result = rx => result.unwrap_or_else(|_| Err(CmdError::io("planning stopped unexpectedly"))),
         _ = abort_rx => Err(CmdError::cancelled()),
+    };
+    if let Err(e) = &result {
+        // A cancelled plan is routine (superseded or user-cancelled), not worth a warning.
+        if matches!(e, CmdError::Cancelled { .. }) {
+            tracing::info!(command = name, "planning cancelled");
+        } else {
+            tracing::warn!(command = name, error = ?e, "command failed");
+        }
     }
+    result
 }
 
 // --- Catalog ---------------------------------------------------------------
 
 #[tauri::command]
 pub async fn load_catalog(state: State<'_, AppState>, refresh: bool) -> CmdResult<CatalogView> {
-    blocking(&state, move |s| s.load_catalog(refresh)).await
+    blocking(&state, "load_catalog", move |s| s.load_catalog(refresh)).await
 }
 
 #[tauri::command]
 pub async fn get_icon(state: State<'_, AppState>, url: String) -> CmdResult<String> {
-    blocking(&state, move |s| s.icon(&url)).await
+    blocking(&state, "get_icon", move |s| s.icon(&url)).await
 }
 
 // --- Game installs -----------------------------------------------------------
 
 #[tauri::command]
 pub async fn list_installs(state: State<'_, AppState>, refresh: bool) -> CmdResult<InstallsView> {
-    blocking(&state, move |s| Ok(s.list_installs(refresh))).await
+    blocking(&state, "list_installs", move |s| {
+        Ok(s.list_installs(refresh))
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn select_install(state: State<'_, AppState>, key: String) -> CmdResult<InstallsView> {
-    blocking(&state, move |s| s.select_install(&key)).await
+    blocking(&state, "select_install", move |s| s.select_install(&key)).await
 }
 
 #[tauri::command]
@@ -105,7 +126,7 @@ pub async fn add_custom_install(
     config_dir: Option<String>,
     executable: Option<String>,
 ) -> CmdResult<InstallsView> {
-    blocking(&state, move |s| {
+    blocking(&state, "add_custom_install", move |s| {
         s.add_custom_install(config_dir, executable)
     })
     .await
@@ -116,24 +137,27 @@ pub async fn remove_custom_install(
     state: State<'_, AppState>,
     key: String,
 ) -> CmdResult<InstallsView> {
-    blocking(&state, move |s| s.remove_custom_install(&key)).await
+    blocking(&state, "remove_custom_install", move |s| {
+        s.remove_custom_install(&key)
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn game_status(state: State<'_, AppState>) -> CmdResult<GameProcessView> {
-    blocking(&state, |s| Ok(s.game_status())).await
+    blocking(&state, "game_status", |s| Ok(s.game_status())).await
 }
 
 #[tauri::command]
 pub async fn launch_game(state: State<'_, AppState>) -> CmdResult<()> {
-    blocking(&state, |s| s.launch_game()).await
+    blocking(&state, "launch_game", |s| s.launch_game()).await
 }
 
 // --- State -------------------------------------------------------------------
 
 #[tauri::command]
 pub async fn get_state(state: State<'_, AppState>) -> CmdResult<ManagerState> {
-    blocking(&state, |s| s.get_state()).await
+    blocking(&state, "get_state", |s| s.get_state()).await
 }
 
 #[tauri::command]
@@ -142,43 +166,67 @@ pub async fn adopt_plugin(
     folder: String,
     catalog_name: String,
 ) -> CmdResult<()> {
-    blocking(&state, move |s| s.adopt_plugin(&folder, &catalog_name)).await
+    blocking(&state, "adopt_plugin", move |s| {
+        s.adopt_plugin(&folder, &catalog_name)
+    })
+    .await
 }
 
 // --- Plans -------------------------------------------------------------------
 
 #[tauri::command]
 pub async fn plan_install(state: State<'_, AppState>, catalog_name: String) -> CmdResult<PlanView> {
-    plan(&state, move |s, t| s.plan_install(t, &catalog_name)).await
+    plan(&state, "plan_install", move |s, t| {
+        s.plan_install(t, &catalog_name)
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn plan_update(state: State<'_, AppState>, folder: String) -> CmdResult<PlanView> {
-    plan(&state, move |s, t| s.plan_update(t, &folder)).await
+    plan(&state, "plan_update", move |s, t| s.plan_update(t, &folder)).await
+}
+
+#[tauri::command]
+pub async fn plan_update_all(state: State<'_, AppState>) -> CmdResult<PlanView> {
+    plan(&state, "plan_update_all", move |s, t| s.plan_update_all(t)).await
 }
 
 #[tauri::command]
 pub async fn plan_enable(state: State<'_, AppState>, identity: String) -> CmdResult<PlanView> {
-    plan(&state, move |s, t| s.plan_enable(t, &identity)).await
+    plan(&state, "plan_enable", move |s, t| {
+        s.plan_enable(t, &identity)
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn plan_disable(state: State<'_, AppState>, identity: String) -> CmdResult<PlanView> {
-    plan(&state, move |s, t| s.plan_disable(t, &identity)).await
+    plan(&state, "plan_disable", move |s, t| {
+        s.plan_disable(t, &identity)
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn plan_uninstall(state: State<'_, AppState>, folder: String) -> CmdResult<PlanView> {
-    plan(&state, move |s, t| s.plan_uninstall(t, &folder)).await
+    plan(&state, "plan_uninstall", move |s, t| {
+        s.plan_uninstall(t, &folder)
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn plan_apply_profile(state: State<'_, AppState>, name: String) -> CmdResult<PlanView> {
-    plan(&state, move |s, t| s.plan_apply_profile(t, &name)).await
+    plan(&state, "plan_apply_profile", move |s, t| {
+        s.plan_apply_profile(t, &name)
+    })
+    .await
 }
 
 #[tauri::command]
 pub fn cancel_planning(state: State<'_, AppState>) {
+    tracing::info!(command = "cancel_planning", "command invoked");
     state.shell.cancel_planning();
     if let Some(abort) = state.abort_slot().take() {
         let _ = abort.send(());
@@ -191,11 +239,13 @@ pub fn resolve_conflict(
     plan_id: u32,
     identity: String,
 ) -> CmdResult<PlanView> {
+    tracing::info!(command = "resolve_conflict", "command invoked");
     state.shell.resolve_conflict(plan_id, &identity)
 }
 
 #[tauri::command]
 pub fn discard_plan(state: State<'_, AppState>, plan_id: u32) {
+    tracing::info!(command = "discard_plan", "command invoked");
     state.shell.discard_plan(plan_id);
 }
 
@@ -205,22 +255,40 @@ pub async fn commit_plan(
     plan_id: u32,
     override_issues: bool,
 ) -> CmdResult<CommitView> {
-    blocking(&state, move |s| s.commit_plan(plan_id, override_issues)).await
+    blocking(&state, "commit_plan", move |s| {
+        s.commit_plan(plan_id, override_issues)
+    })
+    .await
 }
 
 // --- Profiles ----------------------------------------------------------------
 
 #[tauri::command]
 pub async fn create_profile(state: State<'_, AppState>, name: String) -> CmdResult<String> {
-    blocking(&state, move |s| s.create_profile(&name)).await
+    blocking(&state, "create_profile", move |s| s.create_profile(&name)).await
+}
+
+#[tauri::command]
+pub async fn rename_profile(
+    state: State<'_, AppState>,
+    old_name: String,
+    new_name: String,
+) -> CmdResult<String> {
+    blocking(&state, "rename_profile", move |s| {
+        s.rename_profile(&old_name, &new_name)
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn update_active_profile(state: State<'_, AppState>) -> CmdResult<()> {
-    blocking(&state, |s| s.update_active_profile()).await
+    blocking(&state, "update_active_profile", |s| {
+        s.update_active_profile()
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn delete_profile(state: State<'_, AppState>, name: String) -> CmdResult<()> {
-    blocking(&state, move |s| s.delete_profile(&name)).await
+    blocking(&state, "delete_profile", move |s| s.delete_profile(&name)).await
 }
