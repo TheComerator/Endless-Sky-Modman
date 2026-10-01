@@ -2,7 +2,7 @@
 
 use std::fs::{self, File};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use esmm_core::install::{
     self, ExtractLimits, InstallError, extract_zip, find_plugin_root, sanitize_folder_name,
@@ -156,7 +156,16 @@ fn zip_slip_and_symlink_entries_stay_inside_staging() {
     assert_eq!(report.skipped.len(), 3);
     // zip's enclosed_name strips the root, so the absolute entry lands inside staging.
     assert_eq!(report.files, 2);
-    assert!(staging.join(&absolute[1..]).is_file());
+    // Strip the root/prefix (e.g. `/` on Unix, `C:\` on Windows) the same way enclosed_name
+    // does, instead of assuming a single-character root.
+    let expected_relative: PathBuf = Path::new(absolute)
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(s) => Some(s),
+            _ => None,
+        })
+        .collect();
+    assert!(staging.join(&expected_relative).is_file());
     assert!(!dir.path().join("evil.txt").exists());
     assert!(!dir.path().join("evil2.txt").exists());
     assert!(!Path::new(absolute).exists());

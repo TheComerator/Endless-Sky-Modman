@@ -71,3 +71,19 @@ Format: WHAT went wrong, WHY it went wrong, HOW to prevent it.
 **Why it went wrong:** The shell inherited `DBUS_SESSION_BUS_ADDRESS` pointing at the host's real user session bus (`/run/user/1000/bus`). GTK/WebKitGTK waited on a desktop-portal call over that bus that never got an answer in a session with no desktop, so window creation stalled silently. Thread states (`/proc/<pid>/task/*/wchan`) showed the main loop idling in `poll`, not a crash.
 
 **How to prevent it:** Run headless GTK/WebKit apps inside their own session bus: `DISPLAY=:99 dbus-run-session -- target/debug/esmm`. With that, the window mapped immediately and `xdg-desktop-portal-gtk` started inside the private bus. When a GUI app "runs" headless but shows nothing, list its X windows with `xdotool search --name .` and check whether its child processes exist before trying renderer flags.
+
+---
+
+## First Windows setup: three separate, unrelated-looking failures from `cargo test` (2026-10-01)
+
+**What went wrong:** First-ever build/test on Windows (previously Linux-VPS-only) failed three times in sequence, each looking like a different kind of problem:
+1. `cargo test` refused outright: `tauri@2.12.1 requires rustc 1.90`, `sysinfo@0.39.6 requires rustc 1.95`, but the box had rustc 1.89.0.
+2. After updating rustc, the `esmm-core` test crate failed to *compile*: `crates/esmm-core/tests/manager.rs` used `std::os::unix::fs::PermissionsExt`/`from_mode` in a new test (`update_all_mid_batch_failure_persists_what_succeeded`, added 2026-10-02) without the `#[cfg(unix)]` gate that every other Unix-permission-trick test already carries.
+3. After that compiled, `cargo test`'s separate test-harness binary for the `esmm` (Tauri shell) crate crashed instantly with `STATUS_ENTRYPOINT_NOT_FOUND` (0xc0000139) before any test ran — confirmed via `dumpbin /imports` to be a statically-imported `TaskDialogIndirect` from `comctl32.dll`, which only exists in the "themed" v6 comctl32 that Windows loads only for a process whose *executable* carries an embedded manifest. `tauri_build::build()` (in `build.rs`) embeds that manifest into the real `[[bin]]` target, but not into cargo's separate test-harness binary for the lib crate — so testing `esmm_lib` directly via plain `cargo test` can never work on Windows, regardless of the actual test code.
+
+**Why it went wrong:** The project had only ever been built and tested on a Linux VPS, so nothing about the Windows side (toolchain version floor, Unix-only test tricks, Tauri's Windows manifest requirement) had ever been exercised. Each failure looked unrelated to the others and to "setting up a project," which is exactly why they're worth recording together.
+
+**How to prevent it / what to do each time:**
+- Version floor errors from Cargo name the exact required version — `rustup update stable` and retry, don't downgrade dependencies.
+- Any test using `std::os::unix::*` needs `#[cfg(unix)]` on the test *and* on any helper function that only that test calls (a helper left ungated throws a `dead_code` warning on Windows once its only caller is gated out — gate the helper too for a clean `cargo clippy`/build).
+- `cargo test -p esmm-core` (the pure-Rust crate) is the meaningful test run on any platform; `cargo test -p esmm` (the Tauri shell crate's own unit tests in `app/src-tauri/src/tests.rs`) cannot run via plain `cargo test` on Windows at all — this is a Rust/Tauri Windows limitation, not a project bug. Validate that crate's behavior by actually running the built app (`npm run tauri dev`) instead.
