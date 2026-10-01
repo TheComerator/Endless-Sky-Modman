@@ -250,6 +250,10 @@ fn simple_install() {
     let records = world.records();
     assert_eq!(records.len(), 1);
     assert_eq!(records["A-Cat"].identity, "Plugin A");
+    assert_eq!(
+        records["A-Cat"].sha256, "test-sha",
+        "the fetcher's SHA-256 reaches the install record (decision A)"
+    );
     assert!(world.folder_names_tmp_is_clean());
 }
 
