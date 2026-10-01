@@ -23,3 +23,15 @@ For `plugins.txt`, the writer (`ostream << bool`) and reader (`DataNode::Value`,
 ## Sample real plugin downloads before designing install logic (2026-10-01)
 
 Downloading 11 real plugins (mixed URL types: release assets, tag archives, commit archives, Bitbucket) exposed the versioned wrapper folder inside every zip, the missing `plugin.txt` in 6 of 11, and catalog/plugin.txt name mismatches. None of this was visible from the catalog JSON or the game source alone, and it drove design decision A (stable install folder names). Keep a small fixture set of real plugin zips for tests rather than synthetic ones.
+
+## Find a game's process name in its build and packaging files, not its title (2026-10-01)
+
+The executable name differs per platform and comes from build config, not the product name: Endless Sky's `CMakeLists.txt` sets `OUTPUT_NAME` to `endless-sky` (Linux), `Endless Sky` (Windows, giving `Endless Sky.exe`) and `Endless Sky` (macOS bundle). Then check every distribution channel actually ships that binary: `.github/workflows/cd_release.yaml` (Steam depots for each OS), `steam/docker-compose.yml`, `utils/build_appimage.sh`, and the Flathub manifest's `command`. Also check the 15-byte limit on Linux process names (`/proc/<pid>/comm`); a longer name would need prefix matching. A Windows exe under Proton/Wine shows up on Linux under its `.exe` name.
+
+## Make filesystem failure paths testable with a read-only parent dir (2026-10-01)
+
+`rename(src, dst)` needs write permission on `src`'s parent. Putting the staged folder inside a `0o555` dir makes the install swap fail AFTER the old copy has been moved out, which exercises the restore path without mocks. Probe-write first and skip if it succeeds (root ignores permissions). See `failed_swap_restores_the_old_version` in `tests/install.rs`.
+
+## Factor network streaming loops over `impl Read` to test them offline (2026-10-01)
+
+`download.rs`'s `copy_limited` takes a generic reader, so the size cap with no Content-Length and mid-download cancel are unit-tested with an in-memory reader that returns 100-byte chunks; no TLS test server needed.

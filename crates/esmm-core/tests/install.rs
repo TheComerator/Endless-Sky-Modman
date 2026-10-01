@@ -281,8 +281,40 @@ fn reinstall_replaces_and_leaves_nothing_behind() {
     assert_eq!(second.path, first.path);
     assert!(second.meta.is_none());
     assert_eq!(names(&second.path.join("data")), ["y.txt"]);
+    assert_eq!(second.leftover, None);
     assert_eq!(names(&s.plugins()), ["Foo"]);
     assert!(names(&s.tmp()).is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_swap_restores_the_old_version() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let s = Setup::new(WRAPPED);
+    let first = s.install("Foo");
+    // A read-only parent makes the staged folder impossible to move, after the old copy is out.
+    let locked = s.tmp().join("locked");
+    let staged = locked.join("Foo-2.0");
+    fs::create_dir_all(staged.join("data")).unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+    if fs::write(locked.join("probe"), "").is_ok() {
+        eprintln!("skipping: permissions not enforced (running as root?)");
+        return;
+    }
+
+    let result = install::install(&staged, &s.plugins(), &s.tmp(), "Foo");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(
+        matches!(result, Err(InstallError::Io(ref e)) if e.kind() == std::io::ErrorKind::PermissionDenied),
+        "{result:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(first.path.join("data/x.txt")).unwrap(),
+        "ship stuff"
+    );
+    assert_eq!(names(&s.plugins()), ["Foo"]);
+    assert_eq!(names(&s.tmp()), ["locked"], "old-copy holder cleaned up");
 }
 
 #[test]
@@ -333,7 +365,32 @@ fn sanitize_folder_name_cases() {
         ("...", "_"),
         ("a<b>c\"d/e\\f|g*h\ti", "a_b_c_d_e_f_g_h_i"),
         ("Jimmys-Ship-Emporium", "Jimmys-Ship-Emporium"),
+        ("COM\u{b9}", "_COM\u{b9}"),
+        ("lpt\u{b3}.txt", "_lpt\u{b3}.txt"),
+        ("COM\u{b9}x", "COM\u{b9}x"),
+        ("COM\u{2074}", "COM\u{2074}"),
     ] {
         assert_eq!(sanitize_folder_name(input), expected, "{input:?}");
+    }
+}
+
+#[test]
+fn sanitize_folder_name_caps_length() {
+    assert_eq!(sanitize_folder_name(&"a".repeat(300)), "a".repeat(255));
+    // 'é' is 2 bytes, so 255 bytes would split one; the cut falls back to 254.
+    assert_eq!(sanitize_folder_name(&"é".repeat(200)), "é".repeat(127));
+    let dots_at_cut = format!("{}. .{}", "a".repeat(252), "b".repeat(50));
+    assert_eq!(sanitize_folder_name(&dots_at_cut), "a".repeat(252));
+    let reserved = format!("CON.{}", "x".repeat(300));
+    let got = sanitize_folder_name(&reserved);
+    assert_eq!(got.len(), 255);
+    assert!(got.starts_with("_CON.x"));
+    for name in [&"a".repeat(300), &"é".repeat(200), &dots_at_cut, &reserved] {
+        let once = sanitize_folder_name(name);
+        assert_eq!(
+            sanitize_folder_name(&once),
+            once,
+            "stable when re-sanitized"
+        );
     }
 }
