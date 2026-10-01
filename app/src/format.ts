@@ -87,6 +87,7 @@ export function describeStep(step: StepView): string {
 const VERBS: Record<PlanKind, string> = {
   install: "Install",
   update: "Update",
+  updateAll: "Update all",
   enable: "Enable",
   disable: "Disable",
   uninstall: "Uninstall",

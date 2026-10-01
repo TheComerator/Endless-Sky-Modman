@@ -18,6 +18,7 @@ import type { Notify } from "./useToasts";
 export type PlanRequest =
   | { kind: "install"; catalogName: string }
   | { kind: "update"; folder: string; label: string }
+  | { kind: "updateAll" }
   | { kind: "enable"; identity: string }
   | { kind: "disable"; identity: string }
   | { kind: "uninstall"; folder: string; label: string }
@@ -36,6 +37,8 @@ function requestTitle(r: PlanRequest): string {
       return `Install ${r.catalogName}`;
     case "update":
       return `Update ${r.label}`;
+    case "updateAll":
+      return "Update all";
     case "enable":
       return `Enable ${r.identity}`;
     case "disable":
@@ -53,6 +56,8 @@ function runPlan(r: PlanRequest): Promise<PlanView> {
       return api.planInstall(r.catalogName);
     case "update":
       return api.planUpdate(r.folder);
+    case "updateAll":
+      return api.planUpdateAll();
     case "enable":
       return api.planEnable(r.identity);
     case "disable":
