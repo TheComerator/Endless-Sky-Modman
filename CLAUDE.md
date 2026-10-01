@@ -134,10 +134,23 @@ dependencies
 **C. Dependency resolution.** Dependency data only exists inside the download, so: download to a staging folder, parse its `plugin.txt`, resolve `requires` recursively (cycle guard), then present ONE plan before anything is committed ("installing X also installs Y and Z; X conflicts with W, which is enabled"). Commit atomically.
 - Problems (required plugin not in catalog, game version too old, conflict with an enabled plugin, uninstalling something others require): **warn and block, with an explicit user override to proceed anyway.**
 - Optional dependencies: shown, never forced.
+- Implemented in `esmm-core/src/resolve.rs` (pure checks, no I/O) and `esmm-core/src/manager.rs` (orchestration: scanning, planning, committing).
+
+**Identity matching (`resolve::match_catalog`).** `requires`/`conflicts`/`optional` name plugin *identities* (the `plugin.txt` `name`, else the folder name), not catalog names, and the two often differ (`Jimmys-Ship-Emporium` vs `Jimmy's Ship Emporium`). Matching an identity against the catalog, in order:
+- **Exact:** an install record already maps this identity to a catalog name, or a catalog entry's name equals the identity exactly.
+- **Likely:** normalize both sides (lowercase, keep only alphanumerics: `Jimmy's Ship Emporium` and `Jimmys-Ship-Emporium` both become `jimmysshipemporium`) and compare. Exactly one catalog entry matching = `Likely`; several = `Ambiguous` (never resolved automatically). Never fuzzy/edit-distance matched.
+- A `Likely` match **must be confirmed after download**: if the downloaded plugin's actual `plugin.txt` identity doesn't equal the identity that was required, that's an `IdentityMismatch` issue, not a silent success. The plugin still gets staged and installed under its real identity; the specific requirement that named it just stays unmet (and is reported as such) unless something else in the final state also satisfies it.
+
+**What `game version` means (undocumented upstream; here's what we found and what we assume).** Read `source/GameVersion.{h,cpp}` and `source/Plugin.h` directly: the engine's `GameVersion` class only ever *formats* a version (`ToString()`: `major.minor.release.patch`, `-alpha` suffixed for a non-full-release build) and has no parser and no comparison operators at all. `Plugin::PluginDependencies::gameVersion` is a bare `std::string`, stored and dropped straight into the plugin's description text (`Plugin::CreateDescription`) -- never parsed, never compared, anywhere in the engine. The wiki (`CreatingPlugins`) says only: `"game version"`: *"the game version(s) that this plugin is expected to function with"* -- genuinely ambiguous between minimum/exact/range. **We treat it as a minimum required version**, since that's the only reading under which "update your game" can ever resolve the problem; this is our own inference, not confirmed upstream, and worth revisiting if Jon or upstream ever clarifies it.
+- Our own comparator (`resolve::compare_game_versions`), used only by this manager: dotted numeric components, differing lengths padded with trailing zeros (so `0.10.0` < `0.10.13.1`), and a `-alpha` build ranks just below the same numbers without the suffix (so `0.11.4.0-alpha` < `0.11.4.0`). An unparseable string on either side, or the installed game's version simply being unknown (detection failed or hasn't run), is `GameVersionUnknown` -- never guessed.
+
+**Conflict resolution options.** A `Conflict` between the new plan and an already-installed, enabled plugin can be resolved either by overriding (keep both enabled, the general escape hatch for every blocking issue) or, specifically for conflicts, by `InstallPlan::disable_to_resolve(identity)`, which adds a "disable that plugin" step to the plan and removes the conflict issue outright -- no override needed. A conflict between two plugins newly introduced *within the same plan* works the same way.
+
+**Commit behavior.** `manager::commit` (and its `commit_enable`/`commit_disable`/`commit_uninstall`/`commit_update` siblings) all: refuse up front if blocking issues remain and no override was given; check `GameProcess` and refuse before touching *anything* if it's `Running` (plugins.txt can't survive the game exiting over it); otherwise install each staged plugin in order (dependencies first; each individual install is already atomic via `install::install`) and write install records, `plugins.txt`, and the active profile together at the end. If one step in a multi-step plan fails partway, commit stops there and persists records/`plugins.txt`/the profile for exactly what succeeded before the failure -- never a half-applied plugin, but also not a full multi-plugin transaction/rollback system. `CommitContext::detect_game` is a swappable function pointer (production wires in the real `game_state::detect_game_process`) purely so tests can simulate "the game is running" deterministically.
 
 **D. Update checking.** Compare the install record's version against the catalog's `version` by string equality. Any difference = update available. Updating replaces the folder atomically and keeps the enabled state (stable folder name from A makes this work).
 
-**E. Profiles.** A profile records **only which plugins are enabled**, not versions. Because unlisted plugins default to enabled in `plugins.txt`, applying a profile must write an explicit `true`/`false` for every installed plugin. Applying a profile that references a plugin that isn't installed offers to install it. Flag drift when the live `plugins.txt` no longer matches the active profile (e.g. user toggled plugins in-game).
+**E. Profiles.** A profile records **only which plugins are enabled**, not versions. Because unlisted plugins default to enabled in `plugins.txt`, applying a profile must write an explicit enabled/disabled entry for every installed plugin (written as `1`/`0`). Applying a profile that references a plugin that isn't installed offers to install it. Flag drift when the live `plugins.txt` no longer matches the active profile (e.g. user toggled plugins in-game).
 - Profiles live in the manager's app-data dir (JSON), never in the game's config dir.
 - Each enabled entry stores the game identity and, when known from install records, the catalog name, so a missing plugin can be installed from the catalog.
 - First run: if no profiles exist, the current effective state is snapshotted into an active profile named "Default".
@@ -191,12 +204,15 @@ EndlessSky/
         │   ├── game_state.rs        # game-running detection, safe plugins.txt read/write with backup
         │   ├── profiles.rs          # profiles: snapshot, apply, drift, default profile (JSON, app-data dir)
         │   ├── game_install.rs      # install detection (native/Steam/Flatpak/custom) and launch (decision H)
+        │   ├── resolve.rs           # pure dependency/conflict/game-version checks, identity matching (decision C)
+        │   ├── manager.rs           # orchestration with I/O: scan, plan (install/enable/disable/uninstall/update), commit, adoption (decision C)
         │   └── files.rs             # internal: atomic writes and JSON load/save
         └── tests/
             ├── real_fixtures.rs     # tests against real captured files
             ├── install.rs           # installer tests with zips built on the fly
             ├── game_install.rs      # install detection against fake homes/roots in temp dirs
             ├── catalog_cache.rs     # catalog/icon cache tests against a fake HttpGet, plus one #[ignore]d live test
+            ├── manager.rs           # planning/commit tests end to end against a fake Fetcher serving zips built on the fly
             └── fixtures/            # catalog snapshot, 5 real plugin.txt files, game-install/ (VDF/ACF samples)
 ```
 
@@ -210,12 +226,13 @@ The Tauri shell (`app/`) and React UI are not created yet.
 
 ## Current Status
 
-- **Last worked on:** 2026-10-01 (core slice 4: game install detection and launch across native/Steam/Flatpak/custom installs (H); all tests, clippy and fmt clean)
-- **Stage:** Core library: catalog, DataNode, plugin metadata/state, download, install/uninstall, install records, `plugins.txt` safety, profiles, and game install detection/launch are done. No UI yet.
-- **Next steps (core), in order:** dependency resolver and install orchestration that ties download, install, records, and profiles together (C); catalog and icon ETag cache (I); then the Tauri shell.
-- **Next steps (app):** install Tauri's Linux system libraries (needs `sudo apt`: `libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev pkg-config`), then scaffold the Tauri shell and React UI.
-- **Known limitation:** ureq 3.4.2 has no per-read or idle timeout, so a download that stalls mid-read blocks inside `read()` and can't be cancelled from inside `download_to` (the cancel flag is only checked between reads). The app layer must run downloads on a thread it can abandon.
+- **Last worked on:** 2026-10-01 (core slice 5: dependency resolution and install orchestration -- `resolve.rs` and `manager.rs` (C); all tests, clippy and fmt clean)
+- **Stage:** Core library is feature-complete for v1: catalog + ETag cache, DataNode, plugin metadata/state, download, install/uninstall, install records, `plugins.txt` safety, profiles, game install detection/launch, and dependency resolution/install orchestration are all done. No UI yet.
+- **Next steps (core):** none planned; the remaining work is the Tauri shell and UI below.
+- **Next steps (app):** install Tauri's Linux system libraries (needs `sudo apt`: `libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev pkg-config`), then scaffold the Tauri shell and React UI, wiring its commands onto `manager.rs`'s plan/commit API. **Opus will design the Tauri shell** (noted 2026-10-01); don't start that scaffolding with a smaller model.
+- **Known limitation:** ureq 3.4.2 has no per-read or idle timeout, so a download that stalls mid-read blocks inside `read()` and can't be cancelled from inside `download_to` (the cancel flag is only checked between reads). The app layer must run downloads on a thread it can abandon. `manager.rs` inherits this: a `Fetcher` impl that needs live, interactive cancel must run on its own abandonable thread; `plan_install` itself doesn't expose per-call progress (a `Fetcher` impl can own its own progress callback/cancel flag instead).
 - **Known gaps (game install detection):** Steam-as-Flatpak is not detected; AppImages require the user to add them manually via `GameInstall::standalone`. Both acceptable for now.
+- **Known risk (resolve/manager):** `plan_update` only *reports* a newly-added `requires` (decision C's checks run against it), it doesn't recursively resolve/download it the way `plan_install` does; the UI needs a separate "install this new requirement" step. `InstallPlan::disable_to_resolve` doesn't re-validate whether disabling that plugin now breaks something else that required it -- acceptable for a first pass (conflict targets are usually leaf plugins) but worth revisiting once there's real usage.
 - **Undecided:** project license (left out of Cargo.toml on purpose; Jon's JoyForge is MIT).
 
 ---

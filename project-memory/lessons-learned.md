@@ -31,3 +31,23 @@ Format: WHAT went wrong, WHY it went wrong, HOW to prevent it.
 **Why it went wrong:** Asserted what is true on this box instead of what the code guarantees.
 
 **How to prevent it:** Tests that touch the live system (processes, home dirs, network) should assert only properties that hold on any machine; put exact-outcome checks in tests over injected inputs (here, `game_process_from`).
+
+---
+
+## Passing a generic `fn` item (`fs::rename`) where an injectable `impl Fn(&Path, &Path)` was expected didn't compile (2026-10-01)
+
+**What went wrong:** An earlier session added `install_with(rename: impl Fn(&Path, &Path) -> io::Result<()>, ...)` so tests could inject a failing rename, then called it from `install()` as `install_with(fs::rename, ...)`. This sat uncommitted and didn't actually compile: rustc reported `implementation of Fn is not general enough`, picking one concrete lifetime for `fs::rename`'s generic `P`/`Q` instead of keeping the coercion higher-ranked (`for<'a,'b> Fn(&'a Path, &'b Path)`).
+
+**Why it went wrong:** `fs::rename<P: AsRef<Path>, Q: AsRef<Path>>` is itself generic; coercing a bare generic function *item* straight into a concrete `impl Fn(&Path, &Path)` bound sometimes fails to infer a universally-quantified function pointer, even though the types "look" like they should unify. The diff existed in the working tree (not committed) and nobody had actually run `cargo build` against it before the next session picked up the task.
+
+**How to prevent it:** Wrap a std function with ambiguous-lifetime generics in an explicit closure when passing it to a trait-bound parameter: `|from, to| fs::rename(from, to)` infers correctly because the closure's parameter types come straight from the expected `Fn` bound, not from the function item's own generic signature. More generally: never trust an uncommitted diff is correct just because it exists -- run the build.
+
+---
+
+## Catalog names must actually normalize-match the identity they're meant to resolve, or dependency tests silently test the wrong path (2026-10-01)
+
+**What went wrong:** Early versions of the `manager.rs` integration tests registered catalog entries like `("B-Cat", plugin name "B")` and then had another plugin `require` the identity `"B"`. `resolve::match_catalog` normalizes `"B"` to `"b"` and `"B-Cat"` to `"bcat"` -- they don't match at all, so every "happy path" dependency test (chain, diamond, cycle, enable-a-disabled-dependency, conflicts-via-`requires`) actually exercised the `NoMatch`/`MissingRequirement` path instead of what it claimed to test, and failed once real assertions were added.
+
+**Why it went wrong:** Mentally conflating "the catalog entry for this dependency" with "the dependency," without checking that the normalization rule (lowercase, alphanumeric-only) actually bridges the two strings used in the fixture.
+
+**How to prevent it:** When building a fixture catalog entry that something else's `requires` needs to resolve, make the catalog name either exactly equal to the identity or normalize-identical to it (the real-world case is `Jimmys-Ship-Emporium` / `Jimmy's Ship Emporium`, which *do* normalize the same). Only use a deliberately different catalog name in a test that is specifically exercising `NoMatch`, `Ambiguous`, or `IdentityMismatch`.

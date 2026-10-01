@@ -35,3 +35,15 @@ The executable name differs per platform and comes from build config, not the pr
 ## Factor network streaming loops over `impl Read` to test them offline (2026-10-01)
 
 `download.rs`'s `copy_limited` takes a generic reader, so the size cap with no Content-Length and mid-download cancel are unit-tested with an in-memory reader that returns 100-byte chunks; no TLS test server needed.
+
+## Inject a `Fetcher` trait to test multi-step download orchestration offline (2026-10-01)
+
+`manager.rs`'s planning (`plan_install` et al.) downloads a whole `requires` tree, not just one file, so it takes a `&dyn Fetcher` (one method: `fetch(entry, dest, progress, cancel) -> Result<Downloaded, String>`) instead of calling `download::download_to` directly. Tests implement `Fetcher` over a `HashMap<url, local zip path>` and just copy bytes; this made the full dependency-chain/diamond/cycle/conflict/update test suite (`tests/manager.rs`) run with zero network access and in well under a second. Build the test zips with the real `zip` crate (already a workspace dependency) and real DataNode `plugin.txt` syntax, not stub strings, the same way `tests/install.rs` does.
+
+## Sabotage one specific staged plugin's rename without affecting its siblings by chmod'ing its own staging folder, found via its known wrapper name (2026-10-01)
+
+To test a multi-step commit failing partway (one plugin's install fails after an earlier one in the same plan already succeeded), you can't just make `plugins_dir` read-only -- that blocks every rename into it, not just the one you want to fail. Each staged plugin lives in its own private `TempDir` under `.esmm-tmp/`, and `manager::StagedPlugin`'s path field is private, so from outside the crate: recursively search `.esmm-tmp/` for a directory literally named after the zip's own wrapper folder (which the test fixture already names deterministically, e.g. `"A-src"`), then `chmod 0o555` *its parent* before calling `commit`. Same read-only-parent trick as `install.rs`'s `failed_swap_restores_the_old_version`, just aimed at a specific sibling in a bigger plan instead of the only staged plugin. See `find_dir_named` and `mid_commit_failure_leaves_records_and_plugins_txt_consistent` in `tests/manager.rs`.
+
+## Give `commit`-style functions a swappable `fn() -> T` field for state that's normally read from the live system (2026-10-01)
+
+`manager::commit` must refuse before touching anything if the game process is `Running`, but the real check (`game_state::detect_game_process`) reads the live process list -- nothing a test can control. `CommitContext` carries `detect_game: fn() -> GameProcess` (defaulted to the real function by `CommitContext::new`), and a test just sets the field to a `fn always_running() -> GameProcess { GameProcess::Running }`. A plain function pointer (not a closure trait object) is enough since tests only need fixed return values, and it keeps the context `Copy`-friendly and simple.
