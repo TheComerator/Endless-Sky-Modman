@@ -1,6 +1,15 @@
 [workspace]
 resolver = "3"
-members = ["crates/esmm-core"]
+members = ["crates/esmm-core", "app/src-tauri"]
 
 [workspace.package]
 edition = "2024"
+
+# Tauri's size guideline (https://tauri.app/concept/size/#cargo-configuration). Profiles only
+# take effect at the workspace root.
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
