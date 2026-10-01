@@ -846,6 +846,7 @@ fn update_all_blocked_issue_refuses_the_whole_batch_until_overridden() {
     assert_eq!(world.records()["B-Cat"].version, "2.0");
 }
 
+#[cfg(unix)]
 #[test]
 fn update_all_mid_batch_failure_persists_what_succeeded() {
     use std::os::unix::fs::PermissionsExt;
@@ -1003,6 +1004,7 @@ fn adoption_exact_likely_and_ambiguous() {
 /// Recursively finds a directory literally named `name` under `root` (depth-first). Used to
 /// locate a specific staged plugin's extracted folder on disk without needing access to
 /// `StagedPlugin`'s private `root` field.
+#[cfg(unix)]
 fn find_dir_named(root: &Path, name: &str) -> Option<PathBuf> {
     let entries = fs::read_dir(root).ok()?;
     for entry in entries.flatten() {
