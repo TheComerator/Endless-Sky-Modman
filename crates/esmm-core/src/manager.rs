@@ -470,6 +470,22 @@ pub struct EnablePlan {
     pub issues: Vec<Issue>,
     pub notes: Vec<Note>,
     pub requirement_fixes: HashMap<String, RequirementFix>,
+    /// Added by [`EnablePlan::disable_to_resolve`] to resolve a conflict.
+    pub to_disable: Vec<String>,
+}
+
+impl EnablePlan {
+    /// Resolves a `Conflict` issue naming `identity` by disabling it as part of the same
+    /// commit, instead of requiring an override. Mirrors `InstallPlan::disable_to_resolve`;
+    /// no-op if `identity` isn't actually in conflict in this plan.
+    pub fn disable_to_resolve(&mut self, identity: &str) {
+        let in_conflict = |issue: &Issue| matches!(issue, Issue::Conflict { a, b } if a == identity || b == identity);
+        if !self.issues.iter().any(in_conflict) {
+            return;
+        }
+        self.issues.retain(|issue| !in_conflict(issue));
+        self.to_disable.push(identity.to_string());
+    }
 }
 
 pub fn plan_enable(identity: &str, ctx: &PlanContext) -> EnablePlan {
@@ -516,6 +532,7 @@ pub fn plan_enable(identity: &str, ctx: &PlanContext) -> EnablePlan {
         issues,
         notes,
         requirement_fixes,
+        to_disable: Vec::new(),
     }
 }
 
@@ -1016,6 +1033,7 @@ fn commit_enable_inner(
         ctx,
         ChangeSet {
             to_enable: &to_enable,
+            to_disable: &plan.to_disable,
             ..Default::default()
         },
         game,
@@ -1024,7 +1042,7 @@ fn commit_enable_inner(
         outcome,
         Vec::new(),
         to_enable.to_vec(),
-        Vec::new(),
+        plan.to_disable,
     ))
 }
 
