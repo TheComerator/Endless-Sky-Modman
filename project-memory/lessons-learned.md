@@ -87,3 +87,13 @@ Format: WHAT went wrong, WHY it went wrong, HOW to prevent it.
 - Version floor errors from Cargo name the exact required version — `rustup update stable` and retry, don't downgrade dependencies.
 - Any test using `std::os::unix::*` needs `#[cfg(unix)]` on the test *and* on any helper function that only that test calls (a helper left ungated throws a `dead_code` warning on Windows once its only caller is gated out — gate the helper too for a clean `cargo clippy`/build).
 - `cargo test -p esmm-core` (the pure-Rust crate) is the meaningful test run on any platform; `cargo test -p esmm` (the Tauri shell crate's own unit tests in `app/src-tauri/src/tests.rs`) cannot run via plain `cargo test` on Windows at all — this is a Rust/Tauri Windows limitation, not a project bug. Validate that crate's behavior by actually running the built app (`npm run tauri dev`) instead.
+
+---
+
+## Two checks over the same state both reported the same issue (2026-10-02)
+
+**What went wrong:** after `plan_update` gained a recursive requirement walk, its old whole-state `check_requirements` pass stayed in place, so an unsatisfiable requirement was reported twice (`update_adds_a_new_requirement` failed with the same `MissingRequirement` listed twice).
+
+**Why it went wrong:** the new walk and the old check overlap on exactly the case that's unresolvable, and each pushed into the same `issues` list without knowing about the other.
+
+**How to prevent it:** when layering a new, more thorough check over an old one, decide explicitly whether the old one is replaced or kept as a safety net, and if kept, deduplicate against it. The existing test caught this immediately, which is a good argument for keeping assertions on the *exact* issue list rather than "contains".
