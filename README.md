@@ -6,6 +6,8 @@
 
 **Install, update and switch *Endless Sky* plugins without unzipping anything.**
 
+**[⬇ Download the latest version](https://github.com/TheComerator/Endless-Sky-Modman/releases/latest)** for Windows, macOS or Linux (details under [Install](#install)).
+
 A small desktop app that browses the official community plugin catalog and manages the plugins in your game for you, in the spirit of r2modman. It checks that plugins work together *before* it changes anything, keeps separate profiles for different playthroughs, and never touches your game while it's running.
 
 > This is an unofficial community tool, not made by or affiliated with the *Endless Sky* developers. It's an early (v0.1) release. It works on a real Steam install and the core logic is well tested, but it hasn't had many eyes on it yet. Bug reports are very welcome, see [Reporting a problem](#reporting-a-problem).
