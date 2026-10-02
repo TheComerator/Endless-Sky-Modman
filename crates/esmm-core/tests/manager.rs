@@ -409,6 +409,49 @@ fn requirement_not_in_catalog_blocks_then_override_proceeds() {
 }
 
 #[test]
+fn installing_a_catalog_match_for_an_existing_unmanaged_identity_is_blocked_then_overridable() {
+    let mut world = World::new();
+    let new_entry = world.add_plugin("New-Cat", Some("Shared"), &[], &[], &[], None);
+
+    // An unmanaged plugin already on disk under a different folder, same identity -- the
+    // "ambiguous, couldn't auto-adopt" scenario this guards against (decision B): the game
+    // would only ever load one of the two folders.
+    let existing = world.plugins_dir().join("Existing-Unmanaged");
+    fs::create_dir_all(existing.join("data")).unwrap();
+    fs::write(existing.join("plugin.txt"), "name \"Shared\"\n").unwrap();
+
+    let snap = Snapshot::take(&world);
+    let plan = manager::plan_install(&new_entry, &snap.ctx(&world, None));
+    assert_eq!(
+        plan.issues,
+        [Issue::DuplicateIdentity {
+            identity: "Shared".into(),
+            existing_folder: "Existing-Unmanaged".into(),
+            new_folder: "New-Cat".into(),
+        }]
+    );
+
+    let snap2 = Snapshot::take(&world);
+    let plan2 = manager::plan_install(&new_entry, &snap2.ctx(&world, None));
+    assert!(matches!(
+        manager::commit(plan2, &world.commit_ctx(), false),
+        Err(CommitError::Blocked(_))
+    ));
+    assert_eq!(
+        world.folder_names(),
+        ["Existing-Unmanaged"],
+        "blocked commit touches nothing"
+    );
+
+    // Overriding still proceeds (the general escape hatch, decision C) -- it just can no
+    // longer happen silently.
+    let snap3 = Snapshot::take(&world);
+    let plan3 = manager::plan_install(&new_entry, &snap3.ctx(&world, None));
+    manager::commit(plan3, &world.commit_ctx(), true).unwrap();
+    assert_eq!(world.folder_names(), ["Existing-Unmanaged", "New-Cat"]);
+}
+
+#[test]
 fn ambiguous_normalized_match_blocks() {
     let mut world = World::new();
     // Both catalog names normalize to "dup" without exactly equaling the required "Dup".

@@ -328,6 +328,7 @@ impl<'ctx, 'a> PlanBuilder<'ctx, 'a> {
     /// Recurses into the staged plugin's own `requires` (so dependencies land before it in
     /// `steps`), then records the staged plugin itself.
     fn finish_staging(&mut self, staged: StagedPlugin) {
+        self.check_duplicate_identity(&staged);
         self.seen_identities.insert(staged.identity.clone());
         let identity = staged.identity.clone();
         let requires: Vec<String> = staged.meta.dependencies.requires.iter().cloned().collect();
@@ -335,6 +336,25 @@ impl<'ctx, 'a> PlanBuilder<'ctx, 'a> {
             self.resolve_requirement(requirement, &identity);
         }
         self.steps.push(PlanStep::Install(Box::new(staged)));
+    }
+
+    /// The game loads only the first folder with a given identity (decision A), so installing
+    /// a staged plugin under a folder of its own would silently orphan an existing, differently
+    /// named folder that already claims the same identity -- most often an unmanaged plugin
+    /// decision B couldn't auto-adopt because its identity matched the catalog ambiguously.
+    fn check_duplicate_identity(&mut self, staged: &StagedPlugin) {
+        if let Some(existing) = self
+            .ctx
+            .installed
+            .iter()
+            .find(|p| p.identity == staged.identity && p.folder != staged.folder)
+        {
+            self.issues.push(Issue::DuplicateIdentity {
+                identity: staged.identity.clone(),
+                existing_folder: existing.folder.clone(),
+                new_folder: staged.folder.clone(),
+            });
+        }
     }
 }
 

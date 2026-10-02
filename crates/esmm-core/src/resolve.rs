@@ -184,6 +184,17 @@ pub enum Issue {
         catalog_name: String,
         error: String,
     },
+    /// A newly staged plugin's identity (from its own `plugin.txt`, or its sanitized folder
+    /// name when it has none) is already in use by a different, existing folder -- typically
+    /// an unmanaged plugin that couldn't be auto-adopted because several catalog entries
+    /// normalize to its identity (an `Ambiguous` match, never resolved automatically). The
+    /// game only loads the first folder with a given identity, so installing anyway would
+    /// silently orphan one of the two.
+    DuplicateIdentity {
+        identity: String,
+        existing_folder: String,
+        new_folder: String,
+    },
 }
 
 /// Non-blocking information, never forced.

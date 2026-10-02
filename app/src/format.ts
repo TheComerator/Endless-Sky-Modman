@@ -59,6 +59,11 @@ export function describeIssue(issue: IssueView): Described {
         title: "Download failed",
         detail: `Couldn't download ${issue.catalogName}: ${issue.error}`,
       };
+    case "duplicateIdentity":
+      return {
+        title: "Would duplicate an existing plugin",
+        detail: `${issue.identity} is already installed as ${issue.existingFolder}. Installing this would add a second, differently named copy (${issue.newFolder}) with the same identity, and the game would only load one of them.`,
+      };
   }
 }
 
