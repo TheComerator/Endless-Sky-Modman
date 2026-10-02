@@ -34,6 +34,7 @@ See `CLAUDE.md` for project standards, the confirmed plugin catalog schema, and 
 - [x] Endless Sky installed under a Flatpak build of Steam is now detected (its own non-standard data path, confirmed from Steam's actual Flatpak manifest)
 - [x] Conflicts in enable and profile-switch plans can now offer "disable the other side instead", not just an override — previously only install plans had this
 - [x] A "fix" suggestion (e.g. "Install X first") now automatically resumes the original action once it lands, instead of leaving you to re-click it by hand
+- [x] Updating a plugin that gains a new dependency now resolves and installs it automatically, the same way a fresh install does
 
 ### 🔜 Remaining
 
@@ -43,6 +44,5 @@ See `CLAUDE.md` for project standards, the confirmed plugin catalog schema, and 
 
 - A stalled download can't be cancelled at the network layer directly
 - AppImage installs are added manually, not auto-detected
-- Updating a plugin with a brand-new dependency reports it but won't auto-install it
 
 Full detail, including the reasoning behind each decision: [`CLAUDE.md`](CLAUDE.md#current-status).

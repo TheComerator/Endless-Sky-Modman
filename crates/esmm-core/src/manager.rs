@@ -601,14 +601,28 @@ pub fn plan_uninstall(folder: &str, ctx: &PlanContext) -> UninstallPlan {
 pub struct UpdatePlan {
     pub folder: String,
     staged: StagedPlugin,
+    /// A requirement the new version adds that the old one didn't have, resolved the same
+    /// recursive way `plan_install` resolves any requirement (diamonds staged once, cycles
+    /// terminate, an installed-but-disabled match gets `Enable`d instead of reinstalled) --
+    /// not just reported. Empty when the plugin being updated is currently disabled: nothing
+    /// downstream needs its requirements satisfied either.
+    new_requirements: Vec<PlanStep>,
     pub issues: Vec<Issue>,
     pub notes: Vec<Note>,
 }
 
-/// Fetches the catalog's current version of an already-managed plugin and re-checks
-/// requirements/conflicts/game-version, since a new version can add a requirement that the
-/// old one didn't have. Does not itself resolve a newly-added requirement (unlike
-/// `plan_install`'s recursion) -- it only reports it; installing it is a separate operation.
+impl UpdatePlan {
+    /// What the update installs or enables beyond the updated plugin itself, in dependency
+    /// order, for a caller to show in a review before anything is committed.
+    pub fn new_requirements(&self) -> &[PlanStep] {
+        &self.new_requirements
+    }
+}
+
+/// Fetches the catalog's current version of an already-managed plugin, recursively resolves
+/// any requirement the new version adds that the old one didn't have (the same walk
+/// `plan_install` does for a fresh install), and re-checks conflicts/game-version/remaining
+/// requirements over the resulting state.
 pub fn plan_update(folder: &str, ctx: &PlanContext) -> Result<UpdatePlan, String> {
     tracing::info!(folder, "planning update");
     let current = ctx
@@ -630,14 +644,49 @@ pub fn plan_update(folder: &str, ctx: &PlanContext) -> Result<UpdatePlan, String
     })?;
 
     let currently_enabled = game_state::effective_enabled(ctx.states, &current.identity);
+    // Only walk the new version's requirements if it's actually going to be enabled; nothing
+    // downstream needs them satisfied otherwise, matching the existing
+    // `check_requirements` guard below.
+    let mut builder = PlanBuilder::new(ctx);
+    if currently_enabled {
+        builder.seen_identities.insert(staged.identity.clone());
+        let requires: Vec<String> = staged.meta.dependencies.requires.iter().cloned().collect();
+        for requirement in &requires {
+            builder.resolve_requirement(requirement, &staged.identity);
+        }
+    }
+    let PlanBuilder {
+        steps: new_requirements,
+        issues: mut requirement_issues,
+        ..
+    } = builder;
+
+    let mut forced: HashMap<&str, bool> = HashMap::new();
+    for step in &new_requirements {
+        match step {
+            PlanStep::Enable(identity) => {
+                forced.insert(identity.as_str(), true);
+            }
+            PlanStep::Disable(identity) => {
+                forced.insert(identity.as_str(), false);
+            }
+            PlanStep::Install(_) => {}
+        }
+    }
     let mut planned: Vec<PlannedPlugin> = ctx
         .installed
         .iter()
         .filter(|p| p.folder != folder)
-        .map(|p| PlannedPlugin {
-            identity: &p.identity,
-            enabled: game_state::effective_enabled(ctx.states, &p.identity),
-            meta: &p.meta,
+        .map(|p| {
+            let enabled = forced
+                .get(p.identity.as_str())
+                .copied()
+                .unwrap_or_else(|| game_state::effective_enabled(ctx.states, &p.identity));
+            PlannedPlugin {
+                identity: &p.identity,
+                enabled,
+                meta: &p.meta,
+            }
         })
         .collect();
     planned.push(PlannedPlugin {
@@ -645,14 +694,27 @@ pub fn plan_update(folder: &str, ctx: &PlanContext) -> Result<UpdatePlan, String
         enabled: currently_enabled,
         meta: &staged.meta,
     });
+    for step in &new_requirements {
+        if let PlanStep::Install(dep) = step {
+            let enabled = forced.get(dep.identity.as_str()).copied().unwrap_or(true);
+            planned.push(PlannedPlugin {
+                identity: &dep.identity,
+                enabled,
+                meta: &dep.meta,
+            });
+        }
+    }
 
     let mut issues = resolve::check_state(&planned, ctx.game_version);
+    issues.append(&mut requirement_issues);
     if currently_enabled {
-        issues.extend(resolve::check_requirements(
-            &planned,
-            ctx.catalog,
-            ctx.records,
-        ));
+        // A safety net over the whole final state (e.g. another plugin's requirement the
+        // update stops satisfying); anything the walk above already reported isn't repeated.
+        for issue in resolve::check_requirements(&planned, ctx.catalog, ctx.records) {
+            if !issues.contains(&issue) {
+                issues.push(issue);
+            }
+        }
     }
     let notes = resolve::optional_notes(&planned);
     if issues.is_empty() {
@@ -663,6 +725,7 @@ pub fn plan_update(folder: &str, ctx: &PlanContext) -> Result<UpdatePlan, String
     Ok(UpdatePlan {
         folder: folder.to_string(),
         staged,
+        new_requirements,
         issues,
         notes,
     })
@@ -1122,8 +1185,13 @@ fn commit_uninstall_inner(
     ))
 }
 
-/// Replaces the folder in place and keeps the enabled state: neither `to_enable` nor
-/// `to_disable` is touched, so whatever `plugins.txt` already said for this identity stands.
+/// Replaces the folder in place and keeps the updated plugin's own enabled state: it's never
+/// added to `to_enable`/`to_disable`, so whatever `plugins.txt` already said for its identity
+/// stands. A brand-new requirement the new version adds (`plan.new_requirements`) is a
+/// different matter -- freshly installed like any other install, enabled like one, or
+/// enabled-in-place if it turns out to already be installed but disabled -- installed first,
+/// so a failure partway through still persists whatever succeeded, including the update
+/// itself if its own install step came after the failure.
 pub fn commit_update(
     plan: UpdatePlan,
     ctx: &CommitContext,
@@ -1144,33 +1212,99 @@ fn commit_update_inner(
     let game = refuse_if_game_running(ctx.detect_game)?;
     let plugins_dir = install::plugins_dir(ctx.config_dir);
     let tmp_dir = install::tmp_dir(ctx.config_dir);
+
+    let mut installed = Vec::new();
+    let mut upsert_records = Vec::new();
+    let mut to_enable = Vec::new();
+    let mut to_disable = Vec::new();
+
+    for step in plan.new_requirements {
+        match step {
+            PlanStep::Install(staged) => {
+                match install::install(&staged.root, &plugins_dir, &tmp_dir, &staged.folder) {
+                    Ok(result) => {
+                        to_enable.push(result.identity().to_string());
+                        upsert_records.push(InstallRecord {
+                            catalog_name: staged.catalog_name,
+                            folder: staged.folder,
+                            identity: result.identity().to_string(),
+                            version: staged.version,
+                            source_url: staged.source_url,
+                            sha256: staged.sha256,
+                        });
+                        installed.push(result);
+                    }
+                    Err(error) => {
+                        let folder = staged.folder;
+                        let outcome = persist_changes(
+                            ctx,
+                            ChangeSet {
+                                upsert_records: &upsert_records,
+                                to_enable: &to_enable,
+                                to_disable: &to_disable,
+                                ..Default::default()
+                            },
+                            game,
+                        )?;
+                        return Err(CommitError::InstallFailed {
+                            report: Box::new(report_from(
+                                outcome, installed, to_enable, to_disable,
+                            )),
+                            folder,
+                            error,
+                        });
+                    }
+                }
+            }
+            PlanStep::Enable(identity) => to_enable.push(identity),
+            PlanStep::Disable(identity) => to_disable.push(identity),
+        }
+    }
+
     let staged = plan.staged;
     let folder = staged.folder.clone();
-    let result = install::install(&staged.root, &plugins_dir, &tmp_dir, &staged.folder).map_err(
-        |error| CommitError::InstallFailed {
-            report: Box::new(CommitReport::default()),
-            folder: folder.clone(),
-            error,
-        },
-    )?;
-    let record = InstallRecord {
-        catalog_name: staged.catalog_name,
-        folder,
-        identity: result.identity().to_string(),
-        version: staged.version,
-        source_url: staged.source_url,
-        sha256: staged.sha256,
-    };
-    let upsert_records = [record];
+    match install::install(&staged.root, &plugins_dir, &tmp_dir, &staged.folder) {
+        Ok(result) => {
+            upsert_records.push(InstallRecord {
+                catalog_name: staged.catalog_name,
+                folder,
+                identity: result.identity().to_string(),
+                version: staged.version,
+                source_url: staged.source_url,
+                sha256: staged.sha256,
+            });
+            installed.push(result);
+        }
+        Err(error) => {
+            let outcome = persist_changes(
+                ctx,
+                ChangeSet {
+                    upsert_records: &upsert_records,
+                    to_enable: &to_enable,
+                    to_disable: &to_disable,
+                    ..Default::default()
+                },
+                game,
+            )?;
+            return Err(CommitError::InstallFailed {
+                report: Box::new(report_from(outcome, installed, to_enable, to_disable)),
+                folder,
+                error,
+            });
+        }
+    }
+
     let outcome = persist_changes(
         ctx,
         ChangeSet {
             upsert_records: &upsert_records,
+            to_enable: &to_enable,
+            to_disable: &to_disable,
             ..Default::default()
         },
         game,
     )?;
-    Ok(report_from(outcome, vec![result], Vec::new(), Vec::new()))
+    Ok(report_from(outcome, installed, to_enable, to_disable))
 }
 
 /// Commits every staged update in order, the same partial-failure honesty as [`commit`]: if
@@ -1178,8 +1312,10 @@ fn commit_update_inner(
 /// persisted and the failing folder/error are reported, rather than losing successful work
 /// to an unrelated later failure.
 ///
-/// Unlike [`commit`], an update never touches enabled state (same as [`commit_update`]):
-/// whatever `plugins.txt` already says for each identity stands.
+/// Unlike [`commit`], an updated plugin's own enabled state is never touched (same as
+/// [`commit_update`]): whatever `plugins.txt` already says for each identity stands. A new
+/// requirement one of them adds is installed and enabled like any fresh install, though --
+/// see [`commit_update`]'s doc comment.
 pub fn commit_update_all(
     plans: Vec<UpdatePlan>,
     ctx: &CommitContext,
@@ -1208,15 +1344,60 @@ fn commit_update_all_inner(
 
     let mut installed = Vec::new();
     let mut upsert_records = Vec::new();
+    let mut to_enable = Vec::new();
+    let mut to_disable = Vec::new();
 
     for plan in plans {
+        for step in plan.new_requirements {
+            match step {
+                PlanStep::Install(staged) => {
+                    match install::install(&staged.root, &plugins_dir, &tmp_dir, &staged.folder) {
+                        Ok(result) => {
+                            to_enable.push(result.identity().to_string());
+                            upsert_records.push(InstallRecord {
+                                catalog_name: staged.catalog_name,
+                                folder: staged.folder,
+                                identity: result.identity().to_string(),
+                                version: staged.version,
+                                source_url: staged.source_url,
+                                sha256: staged.sha256,
+                            });
+                            installed.push(result);
+                        }
+                        Err(error) => {
+                            let folder = staged.folder;
+                            let outcome = persist_changes(
+                                ctx,
+                                ChangeSet {
+                                    upsert_records: &upsert_records,
+                                    to_enable: &to_enable,
+                                    to_disable: &to_disable,
+                                    ..Default::default()
+                                },
+                                game,
+                            )?;
+                            return Err(CommitError::InstallFailed {
+                                report: Box::new(report_from(
+                                    outcome, installed, to_enable, to_disable,
+                                )),
+                                folder,
+                                error,
+                            });
+                        }
+                    }
+                }
+                PlanStep::Enable(identity) => to_enable.push(identity),
+                PlanStep::Disable(identity) => to_disable.push(identity),
+            }
+        }
+
         let staged = plan.staged;
         let folder = staged.folder.clone();
         match install::install(&staged.root, &plugins_dir, &tmp_dir, &staged.folder) {
             Ok(result) => {
                 upsert_records.push(InstallRecord {
                     catalog_name: staged.catalog_name,
-                    folder: staged.folder,
+                    folder,
                     identity: result.identity().to_string(),
                     version: staged.version,
                     source_url: staged.source_url,
@@ -1229,12 +1410,14 @@ fn commit_update_all_inner(
                     ctx,
                     ChangeSet {
                         upsert_records: &upsert_records,
+                        to_enable: &to_enable,
+                        to_disable: &to_disable,
                         ..Default::default()
                     },
                     game,
                 )?;
                 return Err(CommitError::InstallFailed {
-                    report: Box::new(report_from(outcome, installed, Vec::new(), Vec::new())),
+                    report: Box::new(report_from(outcome, installed, to_enable, to_disable)),
                     folder,
                     error,
                 });
@@ -1245,11 +1428,13 @@ fn commit_update_all_inner(
         ctx,
         ChangeSet {
             upsert_records: &upsert_records,
+            to_enable: &to_enable,
+            to_disable: &to_disable,
             ..Default::default()
         },
         game,
     )?;
-    Ok(report_from(outcome, installed, Vec::new(), Vec::new()))
+    Ok(report_from(outcome, installed, to_enable, to_disable))
 }
 
 #[cfg(test)]
