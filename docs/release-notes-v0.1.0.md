@@ -9,15 +9,18 @@ The first public release: a desktop app to install, update and switch *Endless S
 - **Checks before every change**: dependencies, conflicts and game-version requirements are explained in plain language, and a conflict can be fixed by disabling the other plugin in one click.
 - **Updates**, one at a time or all together. A new version that needs an extra plugin installs it for you.
 - **Finds your game** on Windows, macOS and Linux: Steam (including Flatpak Steam), standalone, AppImage or a custom folder. A Launch button is built in.
+- **Updates itself**: the app checks GitHub at startup for a newer signed version and offers it with one click. It never installs without your say-so, and the check can be turned off in Settings.
 - **Careful with your files**: it won't write while the game is running, backs up `plugins.txt` first, and never deletes plugins it didn't install without telling you.
 
 ## Download
 
 | System | File |
 |---|---|
-| Windows | `Endless Sky Mod Manager_0.1.0_x64-setup.exe` (recommended), or the `.msi` |
-| macOS | the `.dmg` |
+| Windows | `Endless.Sky.Mod.Manager_0.1.0_x64-setup.exe` (recommended), or the `.msi` |
+| macOS | `Endless.Sky.Mod.Manager_0.1.0_aarch64.dmg` (Apple Silicon Macs only; no Intel build yet) |
 | Linux | the `.AppImage`, `.deb` or `.rpm` |
+
+The other files (`.sig`, `.tar.gz`, `latest.json`) are for the app's built-in updater; you don't need them.
 
 ## Known first-release caveats
 
