@@ -917,6 +917,65 @@ fn switching_profiles_is_a_checked_plan() {
 }
 
 #[test]
+fn apply_profile_conflict_resolved_via_resolve_conflict() {
+    let w = World::new();
+    w.add(
+        "Y",
+        "Y",
+        "1",
+        PluginDeps {
+            conflicts: &["Z"],
+            ..Default::default()
+        },
+    );
+    w.add("Z", "Z", "1", PluginDeps::default());
+    w.install("Y");
+    w.install("Z");
+    // Both installed and enabled by default would already conflict, so disable Z first: the
+    // profile below re-enabling it is what should surface the conflict, not the install.
+    w.set_enabled("Z", false);
+    assert_eq!(w.shell.create_profile("Clash").unwrap(), "Clash");
+    let mut store = ProfileStore::load(&w.paths().profiles).unwrap();
+    store
+        .insert(
+            "Clash",
+            Profile {
+                enabled: [("Y".to_string(), None), ("Z".to_string(), None)].into(),
+            },
+        )
+        .unwrap();
+    store.save(&w.paths().profiles).unwrap();
+
+    let ticket = w.shell.begin_planning();
+    let plan = w.shell.plan_apply_profile(&ticket, "Clash").unwrap();
+    assert_eq!(
+        plan.issues,
+        [IssueView::Conflict {
+            a: "Y".into(),
+            b: "Z".into()
+        }]
+    );
+    assert_eq!(
+        plan.resolvable_conflicts,
+        ["Y", "Z"],
+        "a profile switch has no single root identity to exclude"
+    );
+
+    let resolved = w.shell.resolve_conflict(plan.plan_id, "Z").unwrap();
+    assert!(resolved.issues.is_empty());
+    assert!(
+        resolved.steps.is_empty(),
+        "Z stays disabled, matching its current state: nothing to do"
+    );
+
+    w.shell.commit_plan(plan.plan_id, false).unwrap();
+    assert!(w.plugin("Y").enabled);
+    assert!(!w.plugin("Z").enabled);
+    assert_eq!(w.state().profiles.active.as_deref(), Some("Clash"));
+    assert!(w.plugins_txt().contains("Z 0"), "written as 0, never false");
+}
+
+#[test]
 fn drift_is_reported_and_resolvable() {
     let w = World::new();
     w.add("X", "X", "1", PluginDeps::default());

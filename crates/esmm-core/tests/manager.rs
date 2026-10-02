@@ -577,6 +577,50 @@ fn conflict_resolved_via_disable_to_resolve() {
 }
 
 #[test]
+fn enable_conflict_resolved_via_disable_to_resolve() {
+    let mut world = World::new();
+    let new = world.add_plugin("New-Cat", Some("New"), &[], &[], &["Old"], None);
+    let old = world.add_plugin("Old-Cat", Some("Old"), &[], &[], &[], None);
+
+    // Install New first (Old doesn't exist yet, so its declared conflict can't trip), then
+    // disable it, then install Old -- so both exist but only Old is enabled, and the conflict
+    // only surfaces when New is re-enabled.
+    {
+        let snap = Snapshot::take(&world);
+        manager::commit(
+            manager::plan_install(&new, &snap.ctx(&world, None)),
+            &world.commit_ctx(),
+            false,
+        )
+        .unwrap();
+    }
+    let mut states = world.states();
+    states.insert("New".to_string(), false);
+    game_state::write_plugin_states(&world.config, &states, GameProcess::NotRunning).unwrap();
+    {
+        let snap = Snapshot::take(&world);
+        manager::commit(
+            manager::plan_install(&old, &snap.ctx(&world, None)),
+            &world.commit_ctx(),
+            false,
+        )
+        .unwrap();
+    }
+
+    let snap = Snapshot::take(&world);
+    let mut plan = manager::plan_enable("New", &snap.ctx(&world, None));
+    assert_eq!(plan.issues.len(), 1, "{:?}", plan.issues);
+    plan.disable_to_resolve("Old");
+    assert!(plan.issues.is_empty());
+
+    let report = manager::commit_enable(plan, &world.commit_ctx(), false).unwrap();
+    assert_eq!(report.enabled, ["New".to_string()]);
+    assert_eq!(report.disabled, ["Old".to_string()]);
+    assert_eq!(world.states().get("Old"), Some(&false));
+    assert_eq!(world.states().get("New"), Some(&true));
+}
+
+#[test]
 fn conflict_between_two_plugins_inside_one_plan() {
     let mut world = World::new();
     world.add_plugin("X", Some("X"), &[], &[], &["Y"], None);

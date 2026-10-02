@@ -139,7 +139,10 @@ struct Pending {
     missing: Vec<MissingView>,
     game_version: Option<String>,
     unmanaged_target: bool,
-    /// For install plans: identities `disable_to_resolve` may be pointed at.
+    /// For install/enable plans: the identity the plan is already about, excluded from
+    /// `resolvable_conflicts` (disabling it "to resolve" its own conflict would amount to not
+    /// doing the plan at all). `None` for a profile switch, which has no single such identity
+    /// -- either side of a conflict there is a legitimate target.
     root_identity: Option<String>,
 }
 
@@ -220,7 +223,10 @@ impl Pending {
     }
 
     fn resolvable_conflicts(&self) -> Vec<String> {
-        if !matches!(self.plan, PendingPlan::Install { .. }) {
+        if !matches!(
+            self.plan,
+            PendingPlan::Install { .. } | PendingPlan::Enable(_) | PendingPlan::ApplyProfile { .. }
+        ) {
             return Vec::new();
         }
         let mut out = BTreeSet::new();
@@ -978,7 +984,14 @@ impl Shell {
         let fixes = requirement_fixes(&plan.issues, &snap);
         self.finish(
             ticket,
-            simple_pending(ticket, &snap, identity, PendingPlan::Enable(plan), fixes),
+            simple_pending_with_root(
+                ticket,
+                &snap,
+                identity,
+                PendingPlan::Enable(plan),
+                fixes,
+                Some(identity.to_string()),
+            ),
         )
     }
 
@@ -1027,40 +1040,7 @@ impl Shell {
             .ok_or_else(|| CmdError::not_found(format!("No profile named {name:?}.")))?;
         let identities = snap.identities();
         let (states, missing) = profiles::apply(profile, &identities, &snap.states);
-
-        let planned: Vec<PlannedPlugin> = snap
-            .installed
-            .iter()
-            .map(|p| PlannedPlugin {
-                identity: &p.identity,
-                enabled: game_state::effective_enabled(&states, &p.identity),
-                meta: &p.meta,
-            })
-            .collect();
-        let mut issues = resolve::check_state(&planned, snap.game_version.as_deref());
-        issues.extend(resolve::check_requirements(
-            &planned,
-            &snap.catalog.entries,
-            &snap.records,
-        ));
-        let notes = resolve::optional_notes(&planned);
-        let steps = snap
-            .installed
-            .iter()
-            .filter_map(|p| {
-                let before = game_state::effective_enabled(&snap.states, &p.identity);
-                let after = game_state::effective_enabled(&states, &p.identity);
-                match (before, after) {
-                    (false, true) => Some(StepView::Enable {
-                        identity: p.identity.clone(),
-                    }),
-                    (true, false) => Some(StepView::Disable {
-                        identity: p.identity.clone(),
-                    }),
-                    _ => None,
-                }
-            })
-            .collect();
+        let (steps, issues, notes) = apply_profile_fields(&snap, &states);
         let fixes = requirement_fixes(&issues, &snap);
         let mut pending = simple_pending(
             ticket,
@@ -1079,8 +1059,11 @@ impl Shell {
         self.finish(ticket, pending)
     }
 
-    /// Resolves a conflict in the pending install plan by disabling one side
-    /// (`InstallPlan::disable_to_resolve`), instead of overriding it.
+    /// Resolves a `Conflict` issue naming `identity` by disabling it as part of the same
+    /// commit, instead of requiring an override: `InstallPlan`/`EnablePlan::disable_to_resolve`
+    /// for those plan kinds, or (`ApplyProfile` has no such method, since it isn't a core-owned
+    /// struct) flipping `identity`'s bit in the plan's own `states` directly and recomputing
+    /// `steps`/`issues`/`notes` from it the same way `plan_apply_profile` does initially.
     pub fn resolve_conflict(&self, plan_id: u32, identity: &str) -> CmdResult<PlanView> {
         let mut slot = lock(&self.pending);
         let pending = slot
@@ -1092,8 +1075,21 @@ impl Shell {
                 "Disabling {identity:?} doesn't resolve a conflict in this plan."
             )));
         }
-        if let PendingPlan::Install { plan, .. } = &mut pending.plan {
-            plan.disable_to_resolve(identity);
+        match &mut pending.plan {
+            PendingPlan::Install { plan, .. } => plan.disable_to_resolve(identity),
+            PendingPlan::Enable(plan) => plan.disable_to_resolve(identity),
+            PendingPlan::ApplyProfile {
+                states,
+                steps,
+                issues,
+                notes,
+                ..
+            } => {
+                let (_, snap) = self.snapshot()?;
+                states.insert(identity.to_string(), false);
+                (*steps, *issues, *notes) = apply_profile_fields(&snap, states);
+            }
+            _ => {}
         }
         Ok(pending.view())
     }
@@ -1242,6 +1238,20 @@ fn simple_pending(
     plan: PendingPlan,
     fixes: Vec<RequirementFixView>,
 ) -> Pending {
+    simple_pending_with_root(ticket, snap, target, plan, fixes, None)
+}
+
+/// Like [`simple_pending`], but with a `root_identity` to exclude from
+/// `Pending::resolvable_conflicts` (the identity the plan is already about -- disabling it
+/// "to resolve" its own conflict would be the same as not enabling it at all).
+fn simple_pending_with_root(
+    ticket: &Ticket,
+    snap: &Snapshot,
+    target: &str,
+    plan: PendingPlan,
+    fixes: Vec<RequirementFixView>,
+    root_identity: Option<String>,
+) -> Pending {
     Pending {
         id: ticket.id,
         paths: snap.paths.clone(),
@@ -1251,7 +1261,7 @@ fn simple_pending(
         missing: Vec::new(),
         game_version: snap.game_version.clone(),
         unmanaged_target: false,
-        root_identity: None,
+        root_identity,
     }
 }
 
@@ -1274,6 +1284,50 @@ fn find_identity<'a>(snap: &'a Snapshot, identity: &str) -> CmdResult<&'a Instal
         .iter()
         .find(|p| p.identity == identity)
         .ok_or_else(|| CmdError::not_found(format!("No installed plugin is named {identity:?}.")))
+}
+
+/// `steps`/`issues`/`notes` for an `ApplyProfile` plan's `states`, against `snap`'s current
+/// live state. Shared by `plan_apply_profile` (building the plan from scratch) and
+/// `resolve_conflict` (recomputing it after flipping one identity's bit to resolve a
+/// conflict), so the two can never drift apart on how a profile's effect is described.
+fn apply_profile_fields(
+    snap: &Snapshot,
+    states: &PluginStates,
+) -> (Vec<StepView>, Vec<Issue>, Vec<Note>) {
+    let planned: Vec<PlannedPlugin> = snap
+        .installed
+        .iter()
+        .map(|p| PlannedPlugin {
+            identity: &p.identity,
+            enabled: game_state::effective_enabled(states, &p.identity),
+            meta: &p.meta,
+        })
+        .collect();
+    let mut issues = resolve::check_state(&planned, snap.game_version.as_deref());
+    issues.extend(resolve::check_requirements(
+        &planned,
+        &snap.catalog.entries,
+        &snap.records,
+    ));
+    let notes = resolve::optional_notes(&planned);
+    let steps = snap
+        .installed
+        .iter()
+        .filter_map(|p| {
+            let before = game_state::effective_enabled(&snap.states, &p.identity);
+            let after = game_state::effective_enabled(states, &p.identity);
+            match (before, after) {
+                (false, true) => Some(StepView::Enable {
+                    identity: p.identity.clone(),
+                }),
+                (true, false) => Some(StepView::Disable {
+                    identity: p.identity.clone(),
+                }),
+                _ => None,
+            }
+        })
+        .collect();
+    (steps, issues, notes)
 }
 
 /// For each unmet requirement, the action that would satisfy it: enabling it when it's
