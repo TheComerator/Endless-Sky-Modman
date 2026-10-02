@@ -585,6 +585,37 @@ pub fn parse_version_output(output: &str) -> Option<String> {
     })
 }
 
+/// The version from a macOS app bundle's `Info.plist` (`CFBundleShortVersionString`), given the
+/// plist's text. Handles the XML form only; a binary plist yields `None`.
+pub fn parse_bundle_version(plist: &str) -> Option<String> {
+    let after_key = plist.split_once("<key>CFBundleShortVersionString</key>")?.1;
+    let value = after_key
+        .split_once("<string>")?
+        .1
+        .split_once("</string>")?
+        .0;
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+/// For an executable at `<name>.app/Contents/MacOS/<exe>`, the version in
+/// `<name>.app/Contents/Info.plist`. Reading the file is more reliable on a Mac than running
+/// the game: Steam's copy may not be directly executable (a real Mac gave "permission denied"),
+/// and a first launch can be slow. `None` for any other layout or an unreadable plist.
+pub fn read_bundle_version(executable: &Path) -> Option<String> {
+    let macos_dir = executable.parent()?;
+    let contents = macos_dir.parent()?;
+    if macos_dir.file_name()? != "MacOS" || contents.file_name()? != "Contents" {
+        return None;
+    }
+    let text = std::fs::read_to_string(contents.join("Info.plist")).ok()?;
+    let version = parse_bundle_version(&text);
+    if version.is_none() {
+        tracing::warn!(plist = ?contents.join("Info.plist"), "no readable version in Info.plist");
+    }
+    version
+}
+
 /// Runs `<executable> --version` with a short timeout. Any failure gives `None`.
 pub fn query_version(executable: &Path) -> Option<String> {
     let mut command = Command::new(executable);
@@ -600,7 +631,7 @@ pub fn query_install_version(install: &GameInstall) -> Option<String> {
             command.args(["run", FLATPAK_APP_ID, "--version"]);
             run_for_version(command)
         }
-        (_, Some(exe)) => query_version(exe),
+        (_, Some(exe)) => read_bundle_version(exe).or_else(|| query_version(exe)),
         (_, None) => {
             tracing::warn!(
                 "no game executable known for this install, so its version can't be read"
