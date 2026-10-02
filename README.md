@@ -25,10 +25,10 @@ See `CLAUDE.md` for project standards, the confirmed plugin catalog schema, and 
 - [x] Cross-platform CI — automated Windows, macOS & Linux builds
 - [x] Windows build & test environment verified (136 core tests, clippy, fmt)
 - [x] First real-world run verified — Steam detect → browse → install → launch, plugin confirmed active in-game
+- [x] App icon — ship-with-engine-trail logo replacing the default Tauri placeholder
 
 ### 🔜 Remaining
 
-- [ ] Replace the placeholder app icons
 - [ ] Manual click-through of update-all / rename / logging UI (Xvfb pass)
 - [ ] Review the inferred Tauri shell & logging architecture decisions
 
