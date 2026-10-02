@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 use esmm_core::game_install::{
     DetectEnv, FLATPAK_APP_ID, FLATPAK_STEAM_APP_ID, GameInstall, InstallKind, Launch, Os,
     STEAM_URL, default_config_dir, detect, group_by_config_dir, launch_command,
-    parse_library_folders, parse_reg_query, parse_version_output, query_version,
+    parse_bundle_version, parse_library_folders, parse_reg_query, parse_version_output,
+    query_version, read_bundle_version,
 };
 use tempfile::TempDir;
 
@@ -539,4 +540,44 @@ fn real_environment_detection_does_not_panic() {
             assert!(install.config_dir.ends_with(OsStr::new("endless-sky")));
         }
     }
+}
+
+const REAL_INFO_PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>Endless Sky</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.11.2</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+</dict>
+</plist>"#;
+
+#[test]
+fn parses_the_bundle_version_from_an_info_plist() {
+    assert_eq!(
+        parse_bundle_version(REAL_INFO_PLIST).as_deref(),
+        Some("0.11.2")
+    );
+    assert_eq!(parse_bundle_version("<dict></dict>"), None);
+    assert_eq!(parse_bundle_version("bplist00 binary"), None);
+}
+
+#[test]
+fn reads_the_version_from_a_mac_bundle_without_running_it() {
+    let tmp = TempDir::new().unwrap();
+    let contents = tmp.path().join("Endless Sky.app").join("Contents");
+    fs::create_dir_all(contents.join("MacOS")).unwrap();
+    fs::write(contents.join("Info.plist"), REAL_INFO_PLIST).unwrap();
+    // The executable is deliberately absent: the plist is enough.
+    let exe = contents.join("MacOS").join("Endless Sky");
+    assert_eq!(read_bundle_version(&exe).as_deref(), Some("0.11.2"));
+}
+
+#[test]
+fn bundle_version_ignores_other_layouts() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("Info.plist"), REAL_INFO_PLIST).unwrap();
+    assert_eq!(read_bundle_version(&tmp.path().join("endless-sky")), None);
 }
