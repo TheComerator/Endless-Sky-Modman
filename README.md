@@ -36,13 +36,10 @@ See `CLAUDE.md` for project standards, the confirmed plugin catalog schema, and 
 - [x] A "fix" suggestion (e.g. "Install X first") now automatically resumes the original action once it lands, instead of leaving you to re-click it by hand
 - [x] Updating a plugin that gains a new dependency now resolves and installs it automatically, the same way a fresh install does
 - [x] AppImage installs on Linux are now auto-detected (by filename, in the usual folders) instead of added by hand
+- [x] A stalled download now times out after 45 idle seconds, and cancel works even mid-stall (the HTTP library has no idle timeout, so reads run on a worker thread the caller can walk away from)
 
 ### 🔜 Remaining
 
 - [ ] Review the inferred Tauri shell & logging architecture decisions
-
-### ℹ️ Known limitations (by design)
-
-- A stalled download can't be cancelled at the network layer directly
 
 Full detail, including the reasoning behind each decision: [`CLAUDE.md`](CLAUDE.md#current-status).
