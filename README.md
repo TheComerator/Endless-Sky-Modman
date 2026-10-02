@@ -22,6 +22,12 @@ A small desktop app that browses the official community plugin catalog and manag
 
 ![A change is always shown for review before anything is written](docs/screenshots/review-dialog.png)
 
+Import someone's shared profile and the manager lists the plugins you're missing, ready to install in one click:
+
+![An imported profile listing the plugins you don't have yet](docs/screenshots/shared-profile-missing-plugins.png)
+
+![Downloading the missing plugins one at a time, with progress and Cancel](docs/screenshots/download-progress.png)
+
 ## What it does
 
 - **Browse and search** the live official plugin catalog, with each plugin's description, author, version and license.
