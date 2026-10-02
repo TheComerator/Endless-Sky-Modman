@@ -31,6 +31,7 @@ See `CLAUDE.md` for project standards, the confirmed plugin catalog schema, and 
 - [x] Log files older than 14 days are pruned automatically on startup
 - [x] Missing-after-profile-switch plugins shown as a real list with a "Download all" button, replacing a button pile that could grow unbounded
 - [x] Installing a plugin whose identity duplicates an existing (usually unmanaged) folder is now blocked instead of silently orphaning one of the two
+- [x] Endless Sky installed under a Flatpak build of Steam is now detected (its own non-standard data path, confirmed from Steam's actual Flatpak manifest)
 
 ### 🔜 Remaining
 
@@ -44,7 +45,7 @@ See `CLAUDE.md` for project standards, the confirmed plugin catalog schema, and 
 ### ℹ️ Known limitations (by design)
 
 - A stalled download can't be cancelled at the network layer directly
-- Steam-as-Flatpak isn't auto-detected; AppImage installs are added manually
+- AppImage installs are added manually, not auto-detected
 - Updating a plugin with a brand-new dependency reports it but won't auto-install it
 
 Full detail, including the reasoning behind each decision: [`CLAUDE.md`](CLAUDE.md#current-status).
