@@ -764,6 +764,75 @@ fn update_adds_a_new_requirement() {
     assert_eq!(world.records()["A-Cat"].version, "2.0");
 }
 
+/// Re-registers `catalog_name` as a new version whose `plugin.txt` requires `requires`.
+fn publish_update_requiring(
+    world: &mut World,
+    catalog_name: &str,
+    identity: &str,
+    requires: &[&str],
+) {
+    world.catalog.retain(|e| e.name != catalog_name);
+    let v2 = entry(catalog_name, "2.0");
+    let zip_path = world.dir.path().join(format!("{catalog_name}-v2.zip"));
+    make_plugin_zip(
+        &zip_path,
+        &format!("{catalog_name}-src"),
+        &plugin_txt(Some(identity), requires, &[], &[], None),
+    );
+    world.fetcher.files.insert(v2.url.clone(), zip_path);
+    world.catalog.push(v2);
+}
+
+#[test]
+fn update_installs_a_new_requirement_the_catalog_can_supply() {
+    let mut world = World::new();
+    let a_v1 = world.add_plugin("A-Cat", Some("A"), &[], &[], &[], None);
+    world.add_plugin("New", Some("New"), &[], &[], &[], None);
+    {
+        let snap = Snapshot::take(&world);
+        let plan = manager::plan_install(&a_v1, &snap.ctx(&world, None));
+        manager::commit(plan, &world.commit_ctx(), false).unwrap();
+    }
+    publish_update_requiring(&mut world, "A-Cat", "A", &["New"]);
+
+    let snap = Snapshot::take(&world);
+    let plan = manager::plan_update("A-Cat", &snap.ctx(&world, None)).unwrap();
+    assert!(plan.issues.is_empty(), "{:?}", plan.issues);
+
+    let report = manager::commit_update(plan, &world.commit_ctx(), false).unwrap();
+    assert_eq!(world.folder_names(), ["A-Cat", "New"]);
+    assert_eq!(world.records()["A-Cat"].version, "2.0");
+    assert_eq!(report.enabled, ["New".to_string()]);
+    assert_eq!(world.states().get("New"), Some(&true));
+}
+
+#[test]
+fn update_enables_a_new_requirement_that_is_installed_but_disabled() {
+    let mut world = World::new();
+    let a_v1 = world.add_plugin("A-Cat", Some("A"), &[], &[], &[], None);
+    let new = world.add_plugin("New", Some("New"), &[], &[], &[], None);
+    for entry in [&a_v1, &new] {
+        let snap = Snapshot::take(&world);
+        let plan = manager::plan_install(entry, &snap.ctx(&world, None));
+        manager::commit(plan, &world.commit_ctx(), false).unwrap();
+    }
+    let mut states = world.states();
+    states.insert("New".to_string(), false);
+    game_state::write_plugin_states(&world.config, &states, GameProcess::NotRunning).unwrap();
+    publish_update_requiring(&mut world, "A-Cat", "A", &["New"]);
+
+    let snap = Snapshot::take(&world);
+    let plan = manager::plan_update("A-Cat", &snap.ctx(&world, None)).unwrap();
+    assert!(plan.issues.is_empty(), "{:?}", plan.issues);
+
+    let report = manager::commit_update(plan, &world.commit_ctx(), false).unwrap();
+    assert!(
+        report.installed.iter().all(|i| i.identity() != "New"),
+        "reused, not reinstalled"
+    );
+    assert_eq!(world.states().get("New"), Some(&true));
+}
+
 #[test]
 fn update_keeps_enabled_state_and_folder_name() {
     let mut world = World::new();

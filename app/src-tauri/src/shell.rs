@@ -206,7 +206,11 @@ impl Pending {
                     },
                 })
                 .collect(),
-            PendingPlan::Update { step, .. } => vec![step.clone()],
+            PendingPlan::Update { plan, step } => {
+                let mut steps = requirement_steps(plan);
+                steps.push(step.clone());
+                steps
+            }
             PendingPlan::UpdateAll { steps, .. } => steps.clone(),
             PendingPlan::Enable(plan) => vec![StepView::Enable {
                 identity: plan.identity.clone(),
@@ -928,6 +932,7 @@ impl Shell {
             let entry = find_entry(&snap.catalog.entries, &record.catalog_name)?;
             match manager::plan_update(folder, &snap.plan_ctx(&fetcher)) {
                 Ok(plan) => {
+                    steps.extend(requirement_steps(&plan));
                     steps.push(StepView::Update {
                         catalog_name: entry.name.clone(),
                         identity: current.identity.clone(),
@@ -1284,6 +1289,29 @@ fn find_identity<'a>(snap: &'a Snapshot, identity: &str) -> CmdResult<&'a Instal
         .iter()
         .find(|p| p.identity == identity)
         .ok_or_else(|| CmdError::not_found(format!("No installed plugin is named {identity:?}.")))
+}
+
+/// Review steps for what an update installs/enables beyond the updated plugin itself (a
+/// requirement its new version added), marked as dependencies like an install plan's.
+fn requirement_steps(plan: &UpdatePlan) -> Vec<StepView> {
+    plan.new_requirements()
+        .iter()
+        .map(|step| match step {
+            PlanStep::Install(staged) => StepView::Install {
+                catalog_name: staged.catalog_name.clone(),
+                identity: staged.identity.clone(),
+                folder: staged.folder.clone(),
+                version: staged.version.clone(),
+                dependency: true,
+            },
+            PlanStep::Enable(identity) => StepView::Enable {
+                identity: identity.clone(),
+            },
+            PlanStep::Disable(identity) => StepView::Disable {
+                identity: identity.clone(),
+            },
+        })
+        .collect()
 }
 
 /// `steps`/`issues`/`notes` for an `ApplyProfile` plan's `states`, against `snap`'s current

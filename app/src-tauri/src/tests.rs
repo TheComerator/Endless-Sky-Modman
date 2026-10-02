@@ -568,6 +568,40 @@ fn installing_twice_is_refused_in_favor_of_update() {
 }
 
 #[test]
+fn update_with_a_new_requirement_shows_and_installs_it() {
+    let w = World::new();
+    w.add("A", "A", "v1", PluginDeps::default());
+    w.add("Dep", "Dep", "1", PluginDeps::default());
+    w.install("A");
+
+    w.add(
+        "A",
+        "A",
+        "v2",
+        PluginDeps {
+            requires: &["Dep"],
+            ..Default::default()
+        },
+    );
+    let ticket = w.shell.begin_planning();
+    let plan = w.shell.plan_update(&ticket, "A").unwrap();
+    assert!(plan.issues.is_empty(), "{:?}", plan.issues);
+    assert!(
+        matches!(
+            plan.steps.first(),
+            Some(StepView::Install { identity, dependency: true, .. }) if identity == "Dep"
+        ),
+        "the dependency comes first: {:?}",
+        plan.steps
+    );
+    assert!(matches!(plan.steps.last(), Some(StepView::Update { .. })));
+
+    w.shell.commit_plan(plan.plan_id, false).unwrap();
+    assert!(w.plugin("Dep").enabled);
+    assert_eq!(w.plugin("A").update, UpdateView::UpToDate);
+}
+
+#[test]
 fn update_is_detected_planned_and_committed() {
     let w = World::new();
     w.add("A", "A", "v1", PluginDeps::default());
