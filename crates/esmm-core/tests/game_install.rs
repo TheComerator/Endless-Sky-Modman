@@ -6,9 +6,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use esmm_core::game_install::{
-    DetectEnv, FLATPAK_APP_ID, GameInstall, InstallKind, Launch, Os, STEAM_URL, default_config_dir,
-    detect, group_by_config_dir, launch_command, parse_library_folders, parse_reg_query,
-    parse_version_output, query_version,
+    DetectEnv, FLATPAK_APP_ID, FLATPAK_STEAM_APP_ID, GameInstall, InstallKind, Launch, Os,
+    STEAM_URL, default_config_dir, detect, group_by_config_dir, launch_command,
+    parse_library_folders, parse_reg_query, parse_version_output, query_version,
 };
 use tempfile::TempDir;
 
@@ -222,6 +222,36 @@ fn linux_steam_with_two_libraries_shares_native_config() {
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].0, config);
     assert_eq!(groups[0].1.len(), 2);
+}
+
+#[test]
+fn linux_steam_as_flatpak_library_is_found_and_shares_native_config() {
+    let fake = Fake::new(Os::Linux);
+    // Steam's own Flatpak manifest overrides XDG_DATA_HOME to this path (confirmed by
+    // reading the Flathub manifest and steam_wrapper.py), unlike the generic Flatpak
+    // auto-redirect every other sandboxed app gets.
+    let steam_root = fake.home(&format!(
+        ".var/app/{FLATPAK_STEAM_APP_ID}/.local/share/Steam"
+    ));
+    write_library_folders(&steam_root, &[&steam_root]);
+    steam_library(&steam_root, &["endless-sky"]);
+    let config = fake.home(".local/share/endless-sky");
+    mkdir(&config);
+
+    let installs = detect(&fake.env);
+    assert_eq!(kinds(&installs), [InstallKind::Steam]);
+    // A native Linux executable was found, so the existing native-vs-Proton check (which
+    // doesn't care which Steam library it came from) resolves the normal native config dir,
+    // not anything under the Flatpak sandbox's own data directory.
+    assert_eq!(installs[0].config_dir, config);
+    assert_eq!(
+        installs[0].executable.as_deref(),
+        Some(
+            steam_root
+                .join("steamapps/common/Endless Sky/endless-sky")
+                .as_path()
+        )
+    );
 }
 
 #[test]
