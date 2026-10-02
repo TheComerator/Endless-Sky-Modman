@@ -27,6 +27,95 @@ pub enum DownloadError {
     TooLarge(u64),
     #[error("download cancelled")]
     Cancelled,
+    #[error("download stalled: no data received for {0} seconds")]
+    Stalled(u64),
+}
+
+/// How long a download may go without receiving a single byte before it's abandoned. Idle
+/// time, not total time: a large plugin on a slow link that keeps trickling in is fine.
+const STALL_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// How often a waiting read re-checks the cancel flag.
+const POLL: Duration = Duration::from_millis(200);
+
+/// Presents a blocking reader running on its own thread as a `Read` that gives up when no
+/// bytes arrive for `stall`, or as soon as `cancel` is set, even though the worker may still be
+/// stuck inside a socket read (ureq has no idle timeout to interrupt it). The abandoned worker
+/// ends on its own once the socket errors, closes, or its channel send finds no receiver; the
+/// bounded channel keeps it from buffering a whole download ahead of the consumer.
+struct ChannelReader<'a> {
+    chunks: std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>,
+    pending: Vec<u8>,
+    offset: usize,
+    stall: Duration,
+    cancel: &'a AtomicBool,
+}
+
+impl<'a> ChannelReader<'a> {
+    fn spawn(
+        mut source: impl Read + Send + 'static,
+        stall: Duration,
+        cancel: &'a AtomicBool,
+    ) -> Self {
+        let (tx, chunks) = std::sync::mpsc::sync_channel(4);
+        std::thread::spawn(move || {
+            loop {
+                let mut buf = vec![0u8; 64 * 1024];
+                match source.read(&mut buf) {
+                    Ok(0) => return,
+                    Ok(n) => {
+                        buf.truncate(n);
+                        if tx.send(Ok(buf)).is_err() {
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(e));
+                        return;
+                    }
+                }
+            }
+        });
+        ChannelReader {
+            chunks,
+            pending: Vec::new(),
+            offset: 0,
+            stall,
+            cancel,
+        }
+    }
+}
+
+impl Read for ChannelReader<'_> {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        use std::io::{Error, ErrorKind};
+        use std::sync::mpsc::RecvTimeoutError;
+
+        if self.offset >= self.pending.len() {
+            let mut waited = Duration::ZERO;
+            self.pending = loop {
+                if self.cancel.load(Ordering::Relaxed) {
+                    return Err(Error::new(ErrorKind::Interrupted, "download cancelled"));
+                }
+                match self.chunks.recv_timeout(POLL) {
+                    Ok(chunk) => break chunk?,
+                    // The worker finished: a clean end of the body.
+                    Err(RecvTimeoutError::Disconnected) => return Ok(0),
+                    Err(RecvTimeoutError::Timeout) => {
+                        waited += POLL;
+                        if waited >= self.stall {
+                            return Err(Error::new(ErrorKind::TimedOut, "download stalled"));
+                        }
+                    }
+                }
+            };
+            self.offset = 0;
+        }
+        let n = out.len().min(self.pending.len() - self.offset);
+        out[..n].copy_from_slice(&self.pending[self.offset..self.offset + n]);
+        self.offset += n;
+        Ok(n)
+    }
 }
 
 /// Streams `url` into `dest_file`, replacing it only once the whole download has succeeded.
@@ -64,17 +153,22 @@ fn download_to_inner(
         .timeout_recv_response(Some(Duration::from_secs(60)))
         .build()
         .into();
-    let mut resp = agent.get(url).call()?;
+    let resp = agent.get(url).call()?;
     let total = resp.body().content_length();
     if total.is_some_and(|t| t > max_bytes) {
         return Err(DownloadError::TooLarge(max_bytes));
     }
     // ureq's limit is set past ours so that overflow surfaces as our own TooLarge error.
-    let mut reader = resp
-        .body_mut()
-        .with_config()
-        .limit(max_bytes.saturating_add(1))
-        .reader();
+    // Read on a worker thread (see `ChannelReader`): ureq has no idle timeout, and a read
+    // blocked on a stalled socket can't otherwise be interrupted by a stall check or a cancel.
+    let mut reader = ChannelReader::spawn(
+        resp.into_body()
+            .into_with_config()
+            .limit(max_bytes.saturating_add(1))
+            .reader(),
+        STALL_TIMEOUT,
+        cancel,
+    );
 
     let dir = match dest_file.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
@@ -85,7 +179,16 @@ fn download_to_inner(
         .prefix(".esmm-download-")
         .tempfile_in(dir)?;
     let mut out = BufWriter::new(tmp.as_file_mut());
-    let got = copy_limited(&mut reader, &mut out, total, max_bytes, progress, cancel)?;
+    let got = copy_limited(&mut reader, &mut out, total, max_bytes, progress, cancel).map_err(
+        |e| match e {
+            // `ChannelReader` reports both as io errors, since that's all `Read` can carry.
+            DownloadError::Io(_) if cancel.load(Ordering::Relaxed) => DownloadError::Cancelled,
+            DownloadError::Io(io) if io.kind() == std::io::ErrorKind::TimedOut => {
+                DownloadError::Stalled(STALL_TIMEOUT.as_secs())
+            }
+            other => other,
+        },
+    )?;
     out.into_inner().map_err(|e| e.into_error())?.sync_all()?;
     tmp.persist(dest_file).map_err(|e| e.error)?;
     Ok(got)
@@ -184,6 +287,86 @@ mod tests {
             cancel,
         );
         (got, out)
+    }
+
+    /// Hands out `first` immediately, then blocks for `hang` like a socket that went quiet.
+    struct Stalls {
+        first: Option<Vec<u8>>,
+        hang: Duration,
+    }
+
+    impl Read for Stalls {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            match self.first.take() {
+                Some(bytes) => {
+                    buf[..bytes.len()].copy_from_slice(&bytes);
+                    Ok(bytes.len())
+                }
+                None => {
+                    std::thread::sleep(self.hang);
+                    Ok(0)
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_stalled_read_times_out_instead_of_hanging() {
+        let cancel = AtomicBool::new(false);
+        let started = std::time::Instant::now();
+        let mut reader = ChannelReader::spawn(
+            Stalls {
+                first: Some(b"hello".to_vec()),
+                hang: Duration::from_secs(30),
+            },
+            Duration::from_millis(400),
+            &cancel,
+        );
+        let mut out = Vec::new();
+        let err = reader.read_to_end(&mut out).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(out, b"hello", "bytes that did arrive are still delivered");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "didn't wait out the hang"
+        );
+    }
+
+    #[test]
+    fn cancel_interrupts_a_blocked_read() {
+        let cancel = AtomicBool::new(false);
+        let mut reader = ChannelReader::spawn(
+            Stalls {
+                first: None,
+                hang: Duration::from_secs(30),
+            },
+            Duration::from_secs(30),
+            &cancel,
+        );
+        let started = std::time::Instant::now();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(Duration::from_millis(300));
+                cancel.store(true, Ordering::Relaxed);
+            });
+            let err = reader.read(&mut [0u8; 16]).unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
+        });
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_healthy_body_passes_through_intact() {
+        let cancel = AtomicBool::new(false);
+        let data: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+        let mut reader = ChannelReader::spawn(
+            std::io::Cursor::new(data.clone()),
+            Duration::from_secs(5),
+            &cancel,
+        );
+        let mut out = Vec::new();
+        reader.read_to_end(&mut out).unwrap();
+        assert_eq!(out, data);
     }
 
     #[test]
