@@ -1,6 +1,6 @@
 [package]
 name = "esmm"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 license.workspace = true
 description = "Endless Sky Mod Manager: the Tauri shell around esmm-core."
