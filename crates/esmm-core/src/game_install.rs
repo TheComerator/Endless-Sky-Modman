@@ -5,7 +5,15 @@
 //! `~/.local/share/endless-sky`) on Linux, `~/Library/Application Support/endless-sky`
 //! on macOS. Steam runs the same binary with no extra arguments, so a Steam install
 //! shares the config dir with a standalone one, except under Proton, where it lives
-//! in the Wine prefix. Flatpak sets `XDG_DATA_HOME` to `~/.var/app/<id>/data`.
+//! in the Wine prefix. Flatpak sets `XDG_DATA_HOME` to `~/.var/app/<id>/data`. Steam-as-
+//! Flatpak is a library source, not a config-dir source: its own manifest overrides
+//! `XDG_DATA_HOME` to a different, non-standard path (`FLATPAK_STEAM_APP_ID`'s doc comment),
+//! but a native Linux `endless-sky` it finds still resolves the normal native config dir --
+//! an *(inference)* that Steam's separate game-launching runtime (Pressure Vessel), unlike
+//! Flatpak's own sandboxing of Steam's client data, bind-mounts the real host home for game
+//! saves, which wasn't directly confirmed from source but matches both wide community usage
+//! and this codebase's existing non-Proton handling (uniform regardless of which library
+//! it's in).
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -18,6 +26,13 @@ use std::time::{Duration, Instant};
 pub const STEAM_APP_ID: &str = "404410";
 pub const STEAM_URL: &str = "steam://rungameid/404410";
 pub const FLATPAK_APP_ID: &str = "io.github.endless_sky.endless_sky";
+/// Confirmed 2026-10-02 by reading the Flathub manifest and `steam_wrapper.py`: unlike most
+/// Flatpak apps (which get Flatpak's automatic `XDG_DATA_HOME` -> `~/.var/app/<id>/data`
+/// redirection, as `FLATPAK_APP_ID` above does), Steam's own manifest sets
+/// `FLATPAK_STEAM_XDG_DIRS_PREFIX=~/.var/app/com.valvesoftware.Steam`, which the wrapper
+/// joins with its own hardcoded `.local/share` (not `data`) to compute `XDG_DATA_HOME`
+/// before Steam starts. Steam's own library then lives at `<that>/Steam`.
+pub const FLATPAK_STEAM_APP_ID: &str = "com.valvesoftware.Steam";
 /// `installdir` from the app's Steam config; used when the app manifest lacks one.
 pub const STEAM_INSTALL_DIR: &str = "Endless Sky";
 const PREF_DIR: &str = "endless-sky";
@@ -275,6 +290,15 @@ fn steam_roots(env: &DetectEnv) -> Vec<PathBuf> {
             roots.push(env.home.join(".steam").join("steam"));
             roots.push(env.home.join(".steam").join("root"));
             roots.push(env.xdg_data_home().join("Steam"));
+            roots.push(
+                env.home
+                    .join(".var")
+                    .join("app")
+                    .join(FLATPAK_STEAM_APP_ID)
+                    .join(".local")
+                    .join("share")
+                    .join("Steam"),
+            );
         }
         Os::Windows => {
             for k in ["ProgramFiles(x86)", "ProgramFiles"] {
