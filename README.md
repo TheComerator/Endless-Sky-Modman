@@ -40,6 +40,6 @@ See `CLAUDE.md` for project standards, the confirmed plugin catalog schema, and 
 
 ### 🔜 Remaining
 
-- [ ] Review the inferred Tauri shell & logging architecture decisions
+- [ ] Review the inferred Tauri shell & logging architecture decisions — needs a person, not code; the checklist is in [`project-memory/architecture-review.md`](project-memory/architecture-review.md)
 
 Full detail, including the reasoning behind each decision: [`CLAUDE.md`](CLAUDE.md#current-status).
