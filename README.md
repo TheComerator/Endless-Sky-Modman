@@ -33,14 +33,11 @@ See `CLAUDE.md` for project standards, the confirmed plugin catalog schema, and 
 - [x] Installing a plugin whose identity duplicates an existing (usually unmanaged) folder is now blocked instead of silently orphaning one of the two
 - [x] Endless Sky installed under a Flatpak build of Steam is now detected (its own non-standard data path, confirmed from Steam's actual Flatpak manifest)
 - [x] Conflicts in enable and profile-switch plans can now offer "disable the other side instead", not just an override — previously only install plans had this
+- [x] A "fix" suggestion (e.g. "Install X first") now automatically resumes the original action once it lands, instead of leaving you to re-click it by hand
 
 ### 🔜 Remaining
 
 - [ ] Review the inferred Tauri shell & logging architecture decisions
-
-### ⚠️ Known gaps (not v1 blockers)
-
-- A "fix" suggestion starts a new plan; the original action must be re-run after
 
 ### ℹ️ Known limitations (by design)
 
