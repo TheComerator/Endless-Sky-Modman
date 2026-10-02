@@ -1,8 +1,10 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
 import { api, asCmdError } from "./api";
 import type { ManagerState } from "./bindings/ManagerState";
+import type { MissingView } from "./bindings/MissingView";
 import { PlanDialog } from "./components/PlanDialog";
+import { PluginIcon } from "./components/PluginIcon";
 import { Toasts } from "./components/Toasts";
 import { formatAge } from "./format";
 import { type Manager, useManager } from "./hooks/useManager";
@@ -75,18 +77,24 @@ function Banners({
   planFlow,
   notify,
   goTo,
+  downloadAllMissing,
 }: {
   state: ManagerState | null;
   manager: Manager;
   planFlow: PlanFlow;
   notify: Notify;
   goTo: (tab: Tab) => void;
+  downloadAllMissing: (items: MissingView[]) => Promise<void>;
 }) {
   const { catalog, game, refreshState } = manager;
   const drift = state?.profiles.drift;
   const active = state?.profiles.active;
   const drifted = drift && (drift.enabledButNotInProfile.length > 0 || drift.inProfileButDisabled.length > 0);
   const missing = state?.profiles.missing ?? [];
+  const busy = planFlow.flow.phase !== "idle";
+  const installableMissing = missing.filter(
+    (m) => m.catalogName && catalog?.entries.some((e) => e.name === m.catalogName),
+  );
 
   return (
     <>
@@ -134,27 +142,44 @@ function Banners({
         </div>
       )}
       {missing.length > 0 && active && (
-        <div className="banner info">
-          <div>
-            The profile <strong>{active}</strong> enables plugins that aren't installed:
-          </div>
-          <div className="banner-actions">
-            {missing.map((m) =>
-              m.catalogName && catalog?.entries.some((e) => e.name === m.catalogName) ? (
-                <button
-                  key={m.identity}
-                  className="small"
-                  onClick={() => void planFlow.start({ kind: "install", catalogName: m.catalogName! })}
-                >
-                  Install {m.identity}
-                </button>
-              ) : (
-                <span key={m.identity} className="muted">
-                  {m.identity} (not in the catalog)
-                </span>
-              ),
+        <div className="banner info" style={{ flexDirection: "column", alignItems: "stretch" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+            <div>
+              The profile <strong>{active}</strong> enables plugins that aren't installed:
+            </div>
+            {installableMissing.length > 1 && (
+              <button className="small primary" disabled={busy} onClick={() => void downloadAllMissing(installableMissing)}>
+                Download all {installableMissing.length}
+              </button>
             )}
           </div>
+          <ul className="rows" style={{ marginTop: 10 }}>
+            {missing.map((m) => {
+              const entry = m.catalogName ? catalog?.entries.find((e) => e.name === m.catalogName) : undefined;
+              return (
+                <li key={m.identity} className="row">
+                  <PluginIcon url={entry?.iconUrl} size={36} />
+                  <div className="row-text">
+                    <div className="row-title">
+                      <span className="name">{m.identity}</span>
+                      {!entry && <span className="muted">not in the catalog</span>}
+                    </div>
+                  </div>
+                  <div className="row-actions">
+                    {entry && (
+                      <button
+                        className="small primary"
+                        disabled={busy}
+                        onClick={() => void planFlow.start({ kind: "install", catalogName: entry.name })}
+                      >
+                        Install
+                      </button>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
         </div>
       )}
     </>
@@ -170,6 +195,27 @@ export default function App() {
   const planFlow = usePlanFlow(notify, onCommitted);
   const [tab, setTab] = useState<Tab>("installed");
   const { state } = manager;
+
+  // Always the latest phase, for a loop that waits on it from inside an async callback
+  // (a plain closure over `planFlow.flow` would see only the snapshot from when it started).
+  const flowPhaseRef = useRef(planFlow.flow.phase);
+  flowPhaseRef.current = planFlow.flow.phase;
+
+  // Installs one missing plugin at a time (the backend holds only one pending plan): each
+  // `start` either commits quietly or opens a review dialog, which pauses this loop - sitting
+  // at the `while` - until the user resolves it, before moving on to the next plugin.
+  const downloadAllMissing = useCallback(
+    async (items: MissingView[]) => {
+      for (const m of items) {
+        if (!m.catalogName) continue;
+        await planFlow.start({ kind: "install", catalogName: m.catalogName });
+        while (flowPhaseRef.current !== "idle") {
+          await new Promise((r) => setTimeout(r, 150));
+        }
+      }
+    },
+    [planFlow],
+  );
 
   const updates = state?.plugins.filter((p) => p.update.kind === "available").length ?? 0;
   const tabs: [Tab, string, string | null][] = [
@@ -197,7 +243,14 @@ export default function App() {
           ))}
         </nav>
         <main>
-          <Banners state={state} manager={manager} planFlow={planFlow} notify={notify} goTo={setTab} />
+          <Banners
+            state={state}
+            manager={manager}
+            planFlow={planFlow}
+            notify={notify}
+            goTo={setTab}
+            downloadAllMissing={downloadAllMissing}
+          />
           {manager.stateError && <div className="banner error">{manager.stateError}</div>}
           {tab === "installed" && <InstalledView manager={manager} planFlow={planFlow} notify={notify} />}
           {tab === "browse" && <BrowseView manager={manager} planFlow={planFlow} />}
