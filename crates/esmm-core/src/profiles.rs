@@ -59,6 +59,8 @@ pub enum ProfileError {
     NotFound(String),
     #[error("no profile is active")]
     NoActiveProfile,
+    #[error("{0}")]
+    InvalidShareFile(String),
     #[error("failed to read or write profiles: {0}")]
     Io(#[from] io::Error),
     #[error("profiles file is corrupt: {0}")]
@@ -144,7 +146,103 @@ pub fn drift(profile: &Profile, installed: &BTreeSet<String>, states: &PluginSta
     drift
 }
 
+/// The version of the share-file layout. Bump it only for a change older apps can't read.
+pub const SHARE_FORMAT: u32 = 1;
+/// A real profile is a few KB; this only stops a wrong or hostile file being read into memory.
+pub const MAX_SHARE_BYTES: u64 = 256 * 1024;
+const MAX_SHARE_ENTRIES: usize = 2000;
+const MAX_SHARE_TEXT: usize = 200;
+
+/// A profile as saved to a file to share. It names plugins and nothing else: no URLs, no
+/// versions (decision E). Anything read from one is looked up in the official catalog by name.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SharedProfile {
+    format: u32,
+    name: String,
+    enabled: Vec<SharedEntry>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SharedEntry {
+    identity: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    catalog_name: Option<String>,
+}
+
+/// The text of a share file for `profile`, named `name`.
+pub fn export_profile(name: &str, profile: &Profile) -> Result<String, ProfileError> {
+    let shared = SharedProfile {
+        format: SHARE_FORMAT,
+        name: name.trim().to_string(),
+        enabled: profile
+            .enabled
+            .iter()
+            .map(|(identity, catalog_name)| SharedEntry {
+                identity: identity.clone(),
+                catalog_name: catalog_name.clone(),
+            })
+            .collect(),
+    };
+    Ok(serde_json::to_string_pretty(&shared)?)
+}
+
+fn clean_text(raw: &str) -> Option<String> {
+    let text = raw.trim();
+    let ok = !text.is_empty()
+        && text.chars().count() <= MAX_SHARE_TEXT
+        && !text.chars().any(char::is_control);
+    ok.then(|| text.to_string())
+}
+
+/// Reads a share file's text into a suggested profile name and the profile. Strict, because the
+/// file comes from someone else: bad size, shape or a newer format are refused with a message
+/// a person can act on, and unusable entries are rejected rather than silently dropped.
+pub fn parse_shared_profile(text: &str) -> Result<(String, Profile), ProfileError> {
+    let bad = |msg: &str| ProfileError::InvalidShareFile(msg.to_string());
+    if text.len() as u64 > MAX_SHARE_BYTES {
+        return Err(bad("That file is too large to be a profile."));
+    }
+    let shared: SharedProfile = serde_json::from_str(text)
+        .map_err(|_| bad("That isn't a profile file made by Endless Sky Mod Manager."))?;
+    if shared.format > SHARE_FORMAT {
+        return Err(bad(
+            "That profile was made by a newer version of the manager. Update the app and try again.",
+        ));
+    }
+    if shared.enabled.len() > MAX_SHARE_ENTRIES {
+        return Err(bad("That profile lists too many plugins to be real."));
+    }
+    let mut profile = Profile::default();
+    for entry in &shared.enabled {
+        let identity = clean_text(&entry.identity)
+            .ok_or_else(|| bad("That profile contains a plugin entry with an invalid name."))?;
+        // A bad catalog name just means "unknown"; the plugin is still listed by identity.
+        let catalog_name = entry.catalog_name.as_deref().and_then(clean_text);
+        profile.enabled.entry(identity).or_insert(catalog_name);
+    }
+    let name = clean_text(&shared.name).unwrap_or_else(|| "Imported profile".to_string());
+    Ok((name, profile))
+}
+
 impl ProfileStore {
+    /// Like [`insert`](Self::insert), but a taken name gets " (2)", " (3)"... instead of an
+    /// error, since an imported name isn't the user's own choice. Returns the stored name.
+    pub fn insert_unique(&mut self, name: &str, profile: Profile) -> Result<String, ProfileError> {
+        let base = name.trim();
+        if base.is_empty() {
+            return Err(ProfileError::EmptyName);
+        }
+        let mut candidate = base.to_string();
+        let mut n = 2;
+        while self.profiles.contains_key(&candidate) {
+            candidate = format!("{base} ({n})");
+            n += 1;
+        }
+        self.insert(&candidate, profile)
+    }
+
     pub fn load(path: &Path) -> Result<Self, ProfileError> {
         files::load_json(path)
     }
@@ -485,6 +583,73 @@ mod tests {
         // rejected renames change nothing
         assert!(store.profiles.contains_key("Main"));
         assert!(store.profiles.contains_key("Alt"));
+    }
+
+    #[test]
+    fn a_profile_survives_export_and_import() {
+        let original = profile(&[("A", Some("A-Cat")), ("B", None)]);
+        let text = export_profile("  My run ", &original).unwrap();
+        let (name, back) = parse_shared_profile(&text).unwrap();
+        assert_eq!(name, "My run");
+        assert_eq!(back, original);
+    }
+
+    #[test]
+    fn import_refuses_files_it_cannot_trust() {
+        let invalid = |text: &str| {
+            matches!(
+                parse_shared_profile(text),
+                Err(ProfileError::InvalidShareFile(_))
+            )
+        };
+        assert!(invalid("not json"));
+        assert!(invalid("{}"));
+        assert!(
+            invalid(r#"{"format":99,"name":"x","enabled":[]}"#),
+            "newer format"
+        );
+        assert!(invalid(
+            r#"{"format":1,"name":"x","enabled":[{"identity":""}]}"#
+        ));
+        assert!(invalid(
+            r#"{"format":1,"name":"x","enabled":[{"identity":"a b"}]}"#
+        ));
+        let many: Vec<String> = (0..MAX_SHARE_ENTRIES + 1)
+            .map(|i| format!(r#"{{"identity":"p{i}"}}"#))
+            .collect();
+        assert!(invalid(&format!(
+            r#"{{"format":1,"name":"x","enabled":[{}]}}"#,
+            many.join(",")
+        )));
+        assert!(invalid(&" ".repeat(MAX_SHARE_BYTES as usize + 1)));
+    }
+
+    #[test]
+    fn import_cleans_names_and_ignores_extra_fields() {
+        let text = r#"{"format":1,"name":"   ","unknown":"ignored","enabled":[
+            {"identity":" A ","catalogName":"A-Cat","url":"https://evil.example/x.zip"},
+            {"identity":"A","catalogName":"Other"},
+            {"identity":"B","catalogName":""}]}"#;
+        let (name, profile) = parse_shared_profile(text).unwrap();
+        assert_eq!(name, "Imported profile", "blank names get a default");
+        assert_eq!(profile.enabled.len(), 2, "duplicates collapse to the first");
+        assert_eq!(profile.enabled["A"].as_deref(), Some("A-Cat"));
+        assert_eq!(
+            profile.enabled["B"], None,
+            "a blank catalog name is unknown"
+        );
+    }
+
+    #[test]
+    fn insert_unique_numbers_a_taken_name() {
+        let mut store = ProfileStore::default();
+        assert_eq!(store.insert_unique("Run", profile(&[])).unwrap(), "Run");
+        assert_eq!(store.insert_unique("Run", profile(&[])).unwrap(), "Run (2)");
+        assert_eq!(store.insert_unique("Run", profile(&[])).unwrap(), "Run (3)");
+        assert!(matches!(
+            store.insert_unique("  ", profile(&[])),
+            Err(ProfileError::EmptyName)
+        ));
     }
 
     #[test]

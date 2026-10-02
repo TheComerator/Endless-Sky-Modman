@@ -43,6 +43,8 @@ export const api = {
   createProfile: (name: string) => invoke<string>("create_profile", { name }),
   renameProfile: (oldName: string, newName: string) =>
     invoke<string>("rename_profile", { oldName, newName }),
+  exportProfile: (name: string, path: string) => invoke<void>("export_profile", { name, path }),
+  importProfile: (path: string) => invoke<string>("import_profile", { path }),
   updateActiveProfile: () => invoke<void>("update_active_profile"),
   deleteProfile: (name: string) => invoke<void>("delete_profile", { name }),
 };

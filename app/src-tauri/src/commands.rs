@@ -281,6 +281,26 @@ pub async fn rename_profile(
 }
 
 #[tauri::command]
+pub async fn export_profile(
+    state: State<'_, AppState>,
+    name: String,
+    path: String,
+) -> CmdResult<()> {
+    blocking(&state, "export_profile", move |s| {
+        s.export_profile(&name, std::path::Path::new(&path))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn import_profile(state: State<'_, AppState>, path: String) -> CmdResult<String> {
+    blocking(&state, "import_profile", move |s| {
+        s.import_profile(std::path::Path::new(&path))
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn update_active_profile(state: State<'_, AppState>) -> CmdResult<()> {
     blocking(&state, "update_active_profile", |s| {
         s.update_active_profile()

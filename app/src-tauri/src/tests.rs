@@ -1066,6 +1066,36 @@ fn rename_profile_preserves_contents_and_active_status() {
     );
 }
 
+#[test]
+fn a_profile_can_be_exported_and_imported_as_a_file() {
+    let w = World::new();
+    w.add("A", "A", "v1", PluginDeps::default());
+    w.install("A");
+    w.state(); // creates the "Default" profile containing A
+
+    let file = w.dir.path().join("shared.esmm-profile.json");
+    w.shell.export_profile("Default", &file).unwrap();
+    assert_eq!(
+        kind(&w.shell.export_profile("Gone", &file).unwrap_err()),
+        "notFound"
+    );
+
+    // Importing the same file twice never collides: the second gets a number.
+    assert_eq!(w.shell.import_profile(&file).unwrap(), "Default (2)");
+    assert_eq!(w.shell.import_profile(&file).unwrap(), "Default (3)");
+    let profiles = w.state().profiles;
+    assert_eq!(
+        profiles.active.as_deref(),
+        Some("Default"),
+        "import doesn't switch"
+    );
+    assert_eq!(profiles.profiles.len(), 3);
+
+    let bad = w.dir.path().join("bad.json");
+    std::fs::write(&bad, "not a profile").unwrap();
+    assert_eq!(kind(&w.shell.import_profile(&bad).unwrap_err()), "invalid");
+}
+
 // ---------------------------------------------------------------------------
 // Installs, catalog, launch
 // ---------------------------------------------------------------------------

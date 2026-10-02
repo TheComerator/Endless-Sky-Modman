@@ -177,9 +177,9 @@ impl From<WriteError> for CmdError {
 impl From<ProfileError> for CmdError {
     fn from(e: ProfileError) -> Self {
         match e {
-            ProfileError::EmptyName | ProfileError::DuplicateName(_) => {
-                CmdError::invalid(e.to_string())
-            }
+            ProfileError::EmptyName
+            | ProfileError::DuplicateName(_)
+            | ProfileError::InvalidShareFile(_) => CmdError::invalid(e.to_string()),
             ProfileError::NotFound(_) | ProfileError::NoActiveProfile => {
                 CmdError::not_found(e.to_string())
             }

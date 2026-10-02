@@ -52,6 +52,8 @@ fn with_commands<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
         commands::commit_plan,
         commands::create_profile,
         commands::rename_profile,
+        commands::export_profile,
+        commands::import_profile,
         commands::update_active_profile,
         commands::delete_profile,
     ])
