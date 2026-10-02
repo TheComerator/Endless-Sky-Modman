@@ -35,6 +35,7 @@ See `CLAUDE.md` for project standards, the confirmed plugin catalog schema, and 
 - [x] Conflicts in enable and profile-switch plans can now offer "disable the other side instead", not just an override — previously only install plans had this
 - [x] A "fix" suggestion (e.g. "Install X first") now automatically resumes the original action once it lands, instead of leaving you to re-click it by hand
 - [x] Updating a plugin that gains a new dependency now resolves and installs it automatically, the same way a fresh install does
+- [x] AppImage installs on Linux are now auto-detected (by filename, in the usual folders) instead of added by hand
 
 ### 🔜 Remaining
 
@@ -43,6 +44,5 @@ See `CLAUDE.md` for project standards, the confirmed plugin catalog schema, and 
 ### ℹ️ Known limitations (by design)
 
 - A stalled download can't be cancelled at the network layer directly
-- AppImage installs are added manually, not auto-detected
 
 Full detail, including the reasoning behind each decision: [`CLAUDE.md`](CLAUDE.md#current-status).

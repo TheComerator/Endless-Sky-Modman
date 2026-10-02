@@ -255,6 +255,35 @@ fn linux_steam_as_flatpak_library_is_found_and_shares_native_config() {
 }
 
 #[test]
+fn linux_appimage_is_found_by_name_in_the_usual_folders() {
+    let fake = Fake::new(Os::Linux);
+    let appimage = fake.home("Applications/Endless_Sky-x86_64.AppImage");
+    touch(&appimage);
+    touch(&fake.home("Applications/Other_Game-x86_64.AppImage"));
+    touch(&fake.home("Downloads/endless-sky-notes.txt"));
+    let config = fake.home(".local/share/endless-sky");
+    mkdir(&config);
+
+    let installs = detect(&fake.env);
+    assert_eq!(kinds(&installs), [InstallKind::Standalone]);
+    assert_eq!(
+        installs[0].config_dir, config,
+        "shares the native config dir"
+    );
+    assert_eq!(installs[0].executable.as_deref(), Some(appimage.as_path()));
+    let (program, args) = program_and_args(&launch_command(&installs[0], Os::Linux).unwrap());
+    assert_eq!(Path::new(&program), appimage.as_path());
+    assert!(args.is_empty());
+}
+
+#[test]
+fn appimages_are_only_looked_for_on_linux() {
+    let fake = Fake::new(Os::MacOs);
+    touch(&fake.home("Applications/Endless_Sky-x86_64.AppImage"));
+    assert!(detect(&fake.env).is_empty());
+}
+
+#[test]
 fn linux_steam_root_symlinks_are_not_listed_twice() {
     let fake = Fake::new(Os::Linux);
     let real = fake.home(".local/share/Steam");

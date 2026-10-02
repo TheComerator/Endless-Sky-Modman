@@ -209,6 +209,7 @@ pub fn detect(env: &DetectEnv) -> Vec<GameInstall> {
     let mut installs: Vec<GameInstall> = standalone_executables(env)
         .into_iter()
         .filter(|exe| exe.is_file())
+        .chain(appimage_executables(env))
         .map(|exe| GameInstall::standalone(env, exe))
         .collect();
     installs.extend(detect_steam(env));
@@ -275,6 +276,52 @@ fn standalone_executables(env: &DetectEnv) -> Vec<PathBuf> {
             .map(|dir| dir.join(mac_bundle_executable()))
             .collect(),
     }
+}
+
+/// Folders people usually keep an AppImage in (it has no installer, so there's no standard
+/// place). Only looked at one level deep: a full-disk crawl would be slow and surprising.
+const APPIMAGE_DIRS: [&str; 6] = [
+    "Applications",
+    "AppImages",
+    "Downloads",
+    "Desktop",
+    ".local/bin",
+    "bin",
+];
+
+/// Linux only. An AppImage doesn't sandbox its data, so it uses the same config dir as a
+/// native install (`GameInstall::standalone`); finding it just gives the launch button
+/// something to run. Matched by name, since the release filename varies by version and
+/// architecture: `.AppImage` containing both "endless" and "sky" (any case, any separator).
+fn appimage_executables(env: &DetectEnv) -> Vec<PathBuf> {
+    if env.os != Os::Linux {
+        return Vec::new();
+    }
+    let mut dirs: Vec<PathBuf> = APPIMAGE_DIRS.iter().map(|d| env.home.join(d)).collect();
+    dirs.push(env.sys("opt"));
+    let mut found = Vec::new();
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut names: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|path| {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
+                name.ends_with(".appimage")
+                    && name.contains("endless")
+                    && name.contains("sky")
+                    && path.is_file()
+            })
+            .collect();
+        names.sort();
+        found.extend(names);
+    }
+    found
 }
 
 fn mac_bundle_executable() -> PathBuf {
