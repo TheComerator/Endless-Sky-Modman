@@ -101,10 +101,9 @@ pub struct HttpFetcher {
 
 impl Default for HttpFetcher {
     fn default() -> Self {
-        // Mega Freight, the catalog's largest known plugin, is 166 MB; leave real headroom.
-        Self {
-            max_bytes: 512 << 20,
-        }
+        // High DPI, the catalog's largest known plugin, is 794 MB (Mega Freight is 166 MB); the
+        // cap only exists to stop a runaway or hostile link, so keep generous headroom.
+        Self { max_bytes: 2 << 30 }
     }
 }
 

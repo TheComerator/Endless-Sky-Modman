@@ -23,7 +23,7 @@ pub struct ExtractLimits {
 impl Default for ExtractLimits {
     fn default() -> Self {
         Self {
-            max_total_bytes: 2 << 30,
+            max_total_bytes: 6 << 30,
             max_entries: 100_000,
         }
     }

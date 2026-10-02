@@ -51,7 +51,7 @@ Quirks to handle, not assume away:
 - Icon key is inconsistently cased (`iconUrl` on 150 entries, `iconURL` on 1). Normalize when parsing. Icon is optional; fall back to a generic image.
 - `version` formats vary wildly: `v0.1.1`, `0.10.1`, `v1.0.8-ship.merging`, 40-char commit SHAs (13 entries). Never try to order versions; any difference from the installed version means "update available".
 - Download URL shapes: 96 GitHub release assets, 43 GitHub tag archives, 25 other GitHub archives (incl. commit SHAs), and 4 non-GitHub hosts (codeberg.org x2, git.nixnet.services, bitbucket.org). Don't assume GitHub.
-- Sizes vary: most are under 3 MB, but Mega Freight is 166 MB.
+- Sizes vary: most are under 3 MB, Mega Freight is 166 MB, and High DPI is 794 MB (918 MB unpacked, found 2026-10-02 when it hit the old 512 MB cap). Limits are now 2 GB download / 6 GB unpacked (`HttpFetcher::default`, `ExtractLimits::default`): kept as a guard against runaway or hostile links, not removed.
 
 ---
 
