@@ -5,6 +5,7 @@ import { api, asCmdError } from "../api";
 import type { InstallKindView } from "../bindings/InstallKindView";
 import type { Manager } from "../hooks/useManager";
 import type { Notify } from "../hooks/useToasts";
+import type { Updater } from "../hooks/useUpdater";
 
 export const KIND_LABEL: Record<InstallKindView, string> = {
   standalone: "Standalone",
@@ -13,7 +14,7 @@ export const KIND_LABEL: Record<InstallKindView, string> = {
   custom: "Custom",
 };
 
-export function SettingsView({ manager, notify }: { manager: Manager; notify: Notify }) {
+export function SettingsView({ manager, notify, updater }: { manager: Manager; notify: Notify; updater: Updater }) {
   const { installs, refreshInstalls, onInstallsChanged } = manager;
   const [configDir, setConfigDir] = useState("");
   const [executable, setExecutable] = useState("");
@@ -36,6 +37,19 @@ export function SettingsView({ manager, notify }: { manager: Manager; notify: No
 
   return (
     <div className="view">
+      <section>
+        <div className="section-head">
+          <h2>Updates</h2>
+          <button disabled={updater.status.phase === "checking" || updater.status.phase === "installing"} onClick={() => void updater.checkNow(false)}>
+            {updater.status.phase === "checking" ? "Checking…" : "Check now"}
+          </button>
+        </div>
+        <label className="muted">
+          <input type="checkbox" checked={updater.autoCheck} onChange={(e) => updater.setAutoCheck(e.target.checked)} />{" "}
+          Check for a new version of the mod manager when it starts. This contacts GitHub; nothing else is sent, and
+          nothing is ever installed without your click.
+        </label>
+      </section>
       <section>
         <div className="section-head">
           <h2>Game installs</h2>

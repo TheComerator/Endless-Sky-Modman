@@ -9,6 +9,7 @@ import { Toasts } from "./components/Toasts";
 import { formatAge } from "./format";
 import { type Manager, useManager } from "./hooks/useManager";
 import { type PlanFlow, usePlanFlow } from "./hooks/usePlanFlow";
+import { type Updater, useUpdater } from "./hooks/useUpdater";
 import { type Notify, useToasts } from "./hooks/useToasts";
 import { BrowseView } from "./views/BrowseView";
 import { InstalledView } from "./views/InstalledView";
@@ -78,6 +79,7 @@ function Banners({
   notify,
   goTo,
   downloadAllMissing,
+  updater,
 }: {
   state: ManagerState | null;
   manager: Manager;
@@ -85,6 +87,7 @@ function Banners({
   notify: Notify;
   goTo: (tab: Tab) => void;
   downloadAllMissing: (items: MissingView[]) => Promise<void>;
+  updater: Updater;
 }) {
   const { catalog, game, refreshState } = manager;
   const drift = state?.profiles.drift;
@@ -98,6 +101,34 @@ function Banners({
 
   return (
     <>
+      {(updater.status.phase === "available" || updater.status.phase === "installing") && (
+        <div className="banner info">
+          <div>
+            {updater.status.phase === "installing" ? (
+              <>
+                Downloading the update{updater.status.percent !== null ? ` (${updater.status.percent}%)` : ""}… the app
+                will restart when it's done.
+              </>
+            ) : (
+              <>
+                <strong>Version {updater.status.version}</strong> of the mod manager is available.
+                {game === "running" && " Close Endless Sky first."}
+                {game !== "running" && busy && " Finish or cancel what you're doing first."}
+              </>
+            )}
+          </div>
+          {updater.status.phase === "available" && (
+            <div className="banner-actions">
+              <button className="small primary" disabled={busy || game === "running"} onClick={() => void updater.install()}>
+                Update and restart
+              </button>
+              <button className="small" onClick={updater.dismiss}>
+                Not now
+              </button>
+            </div>
+          )}
+        </div>
+      )}
       {game === "running" && (
         <div className="banner warn">
           Endless Sky is running. Plugin changes are blocked until it exits, because the game
@@ -193,6 +224,7 @@ export default function App() {
     await manager.refreshState();
   }, [manager.refreshState]);
   const planFlow = usePlanFlow(notify, onCommitted);
+  const updater = useUpdater(notify);
   const [tab, setTab] = useState<Tab>("installed");
   const { state } = manager;
 
@@ -250,12 +282,13 @@ export default function App() {
             notify={notify}
             goTo={setTab}
             downloadAllMissing={downloadAllMissing}
+            updater={updater}
           />
           {manager.stateError && <div className="banner error">{manager.stateError}</div>}
           {tab === "installed" && <InstalledView manager={manager} planFlow={planFlow} notify={notify} />}
           {tab === "browse" && <BrowseView manager={manager} planFlow={planFlow} />}
           {tab === "profiles" && <ProfilesView manager={manager} planFlow={planFlow} notify={notify} />}
-          {tab === "settings" && <SettingsView manager={manager} notify={notify} />}
+          {tab === "settings" && <SettingsView manager={manager} notify={notify} updater={updater} />}
         </main>
       </div>
       <PlanDialog planFlow={planFlow} />

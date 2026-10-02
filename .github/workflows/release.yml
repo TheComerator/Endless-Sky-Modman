@@ -1,10 +1,14 @@
 name: Release
 
+# A release is a deliberate act: push a version tag (for example v0.1.0, matching the version
+# in app/src-tauri/tauri.conf.json) and this builds every platform and attaches the installers,
+# the signed update files and latest.json to a DRAFT release. Review it, paste in the release
+# notes, then publish; the in-app updater only sees published, non-prerelease releases.
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    tags:
+      - 'v*'
 
 jobs:
   publish-tauri:
@@ -53,11 +57,15 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signs the update files so the in-app updater only accepts genuine updates. The
+          # matching public key is in tauri.conf.json. Keep a backup of the private key.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: app
-          tagName: app-v__VERSION__
+          tagName: v__VERSION__
           releaseName: 'Endless Sky Mod Manager v__VERSION__'
-          releaseBody: 'Automated build. See the assets below for your platform. Unsigned build: Windows SmartScreen / macOS Gatekeeper will warn on first launch, this is expected for an unsigned app at this stage.'
+          releaseBody: 'See the assets below for your platform. The installers are not code-signed yet: Windows SmartScreen / macOS Gatekeeper will warn on first launch, which is expected at this stage. (Replace this text with the release notes before publishing.)'
           releaseDraft: true
-          prerelease: true
+          prerelease: false
           args: ${{ matrix.args }}
