@@ -395,6 +395,11 @@ pub enum IssueView {
         catalog_name: String,
         error: String,
     },
+    DuplicateIdentity {
+        identity: String,
+        existing_folder: String,
+        new_folder: String,
+    },
 }
 
 impl From<&Issue> for IssueView {
@@ -443,6 +448,15 @@ impl From<&Issue> for IssueView {
             } => IssueView::CatalogDownloadFailed {
                 catalog_name,
                 error,
+            },
+            Issue::DuplicateIdentity {
+                identity,
+                existing_folder,
+                new_folder,
+            } => IssueView::DuplicateIdentity {
+                identity,
+                existing_folder,
+                new_folder,
             },
         }
     }

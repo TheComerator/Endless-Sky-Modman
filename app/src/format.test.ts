@@ -61,6 +61,7 @@ describe("describeIssue", () => {
       { kind: "ambiguousRequirement", plugin: "A", requires: "B", candidates: ["B1", "B2"] },
       { kind: "identityMismatch", expected: "A", catalogName: "A-Cat", actual: "Z" },
       { kind: "catalogDownloadFailed", catalogName: "A", error: "timeout" },
+      { kind: "duplicateIdentity", identity: "A", existingFolder: "A-unmanaged", newFolder: "A-Cat" },
     ];
     for (const issue of kinds) {
       expect(describeIssue(issue).title.length).toBeGreaterThan(0);
