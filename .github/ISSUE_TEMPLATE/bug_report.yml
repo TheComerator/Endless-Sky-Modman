@@ -1,0 +1,44 @@
+name: Bug report
+description: Something didn't work the way it should
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what actually happened.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      description: Shown in the installer file name, for example 0.1.0.
+    validations:
+      required: true
+  - type: dropdown
+    id: system
+    attributes:
+      label: Your system
+      options: [Windows, macOS, Linux]
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How is Endless Sky installed?
+      options: [Steam, Steam (Flatpak), Standalone, Flatpak, AppImage, Custom folder, Not sure]
+    validations:
+      required: true
+  - type: textarea
+    id: plugins
+    attributes:
+      label: Which plugin(s) were involved?
+      description: Leave blank if it isn't plugin-specific.
+  - type: textarea
+    id: log
+    attributes:
+      label: Relevant log lines
+      description: |
+        The log is the most useful thing you can add. On Windows it is in `%LOCALAPPDATA%\io.github.thecomerator.esmm\logs\`. Paste the last lines from around when it went wrong. It contains your plugin names and folder paths but nothing sensitive.
+      render: text
