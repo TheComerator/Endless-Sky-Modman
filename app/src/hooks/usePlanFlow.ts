@@ -86,6 +86,16 @@ export function usePlanFlow(notify: Notify, onCommitted: () => Promise<void>) {
   const highestSeen = useRef(0);
   const flowRef = useRef(flow);
   flowRef.current = flow;
+  // The request a "fix" button's own plan should resume once it commits successfully: set
+  // right before `start` supersedes a review dialog's plan with a fix sub-action (an
+  // "Install X first" / "Enable X first" button), so the user doesn't have to re-click the
+  // original action by hand once the thing blocking it is gone. Cleared on cancel or on the
+  // fix itself failing, so a dead end never silently retries the stale original.
+  const resumeRequest = useRef<PlanRequest | null>(null);
+  const lastRequest = useRef<PlanRequest | null>(null);
+  // `commit` needs to re-invoke `start` once a fix lands, but `start` is defined afterward
+  // (and already depends on `commit`) - a ref avoids the circular `useCallback` dependency.
+  const startRef = useRef<(request: PlanRequest) => Promise<void>>(() => Promise.resolve());
 
   useEffect(() => {
     const unlisten = listen<DownloadProgress>(DOWNLOAD_PROGRESS_EVENT, (event) => {
@@ -120,6 +130,13 @@ export function usePlanFlow(notify: Notify, onCommitted: () => Promise<void>) {
         for (const leftover of result.leftovers) {
           notify("warn", `The old copy couldn't be deleted and was left at ${leftover}.`);
         }
+        await onCommitted();
+        if (resumeRequest.current) {
+          const toResume = resumeRequest.current;
+          resumeRequest.current = null;
+          await startRef.current(toResume);
+        }
+        return;
       } catch (e) {
         const err = asCmdError(e);
         if (err.kind === "gameRunning" || err.kind === "blocked") {
@@ -129,6 +146,8 @@ export function usePlanFlow(notify: Notify, onCommitted: () => Promise<void>) {
         }
         setFlow({ phase: "idle" });
         notify("error", err.message);
+        // The fix itself failed, so don't chain into whatever it was meant to unblock.
+        resumeRequest.current = null;
       }
       await onCommitted();
     },
@@ -137,6 +156,12 @@ export function usePlanFlow(notify: Notify, onCommitted: () => Promise<void>) {
 
   const start = useCallback(
     async (request: PlanRequest) => {
+      // Superseding a review dialog's plan (a "fix" button's "Install X first" / "Enable X
+      // first") means the plan it was reviewing is the one to resume once this fix commits.
+      if (flowRef.current.phase === "review" && lastRequest.current) {
+        resumeRequest.current = lastRequest.current;
+      }
+      lastRequest.current = request;
       minPlanId.current = highestSeen.current + 1;
       const quiet = request.kind === "enable" || request.kind === "disable";
       setFlow({ phase: "planning", title: requestTitle(request), downloads: [], quiet });
@@ -155,14 +180,17 @@ export function usePlanFlow(notify: Notify, onCommitted: () => Promise<void>) {
         if (err.kind === "cancelled") return;
         setFlow({ phase: "idle" });
         notify("error", err.message);
+        resumeRequest.current = null;
       }
     },
     [commit, notify],
   );
+  startRef.current = start;
 
   const cancel = useCallback(async () => {
     const f = flowRef.current;
     setFlow({ phase: "idle" });
+    resumeRequest.current = null;
     if (f.phase === "planning") await api.cancelPlanning();
     if (f.phase === "review") await api.discardPlan(f.plan.planId);
   }, []);
