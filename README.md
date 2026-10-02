@@ -12,6 +12,16 @@ A small desktop app that browses the official community plugin catalog and manag
 
 > This is an unofficial community tool, not made by or affiliated with the *Endless Sky* developers. It's an early (v0.1) release. It works on a real Steam install and the core logic is well tested, but it hasn't had many eyes on it yet. Bug reports are very welcome, see [Reporting a problem](#reporting-a-problem).
 
+## Screenshots
+
+![Installed plugins, with on/off switches](docs/screenshots/installed.png)
+
+![Browsing the official plugin catalog](docs/screenshots/browse.png)
+
+![Profiles, with export and import](docs/screenshots/profiles.png)
+
+![A change is always shown for review before anything is written](docs/screenshots/review-dialog.png)
+
 ## What it does
 
 - **Browse and search** the live official plugin catalog, with each plugin's description, author, version and license.
