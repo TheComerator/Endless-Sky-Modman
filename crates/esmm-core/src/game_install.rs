@@ -36,7 +36,9 @@ pub const FLATPAK_STEAM_APP_ID: &str = "com.valvesoftware.Steam";
 /// `installdir` from the app's Steam config; used when the app manifest lacks one.
 pub const STEAM_INSTALL_DIR: &str = "Endless Sky";
 const PREF_DIR: &str = "endless-sky";
-const VERSION_TIMEOUT: Duration = Duration::from_secs(5);
+// Generous because a first launch can be slow (e.g. an Intel game binary starting under Rosetta
+// on an Apple Silicon Mac); this runs off the UI thread, so waiting costs nothing visible.
+const VERSION_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Os {
@@ -599,17 +601,28 @@ pub fn query_install_version(install: &GameInstall) -> Option<String> {
             run_for_version(command)
         }
         (_, Some(exe)) => query_version(exe),
-        (_, None) => None,
+        (_, None) => {
+            tracing::warn!(
+                "no game executable known for this install, so its version can't be read"
+            );
+            None
+        }
     }
 }
 
 fn run_for_version(mut command: Command) -> Option<String> {
-    let mut child = command
+    let mut child = match command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .ok()?;
+    {
+        Ok(child) => child,
+        Err(e) => {
+            tracing::warn!(error = %e, program = ?command.get_program(), "couldn't run the game to read its version");
+            return None;
+        }
+    };
     let stdout = child.stdout.take().map(drain);
     let stderr = child.stderr.take().map(drain);
     let deadline = Instant::now() + VERSION_TIMEOUT;
@@ -618,6 +631,7 @@ fn run_for_version(mut command: Command) -> Option<String> {
             Ok(Some(_)) => break,
             Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(25)),
             _ => {
+                tracing::warn!(timeout = ?VERSION_TIMEOUT, "game didn't answer --version in time");
                 let _ = child.kill();
                 let _ = child.wait();
                 return None;
@@ -629,7 +643,15 @@ fn run_for_version(mut command: Command) -> Option<String> {
         .flatten()
         .filter_map(|h| h.join().ok())
         .collect();
-    parse_version_output(&output)
+    let version = parse_version_output(&output);
+    match &version {
+        Some(v) => tracing::info!(version = %v, "read the game's version"),
+        None => tracing::warn!(
+            output = %output.chars().take(300).collect::<String>(),
+            "game ran but its --version output wasn't recognised"
+        ),
+    }
+    version
 }
 
 fn drain(mut pipe: impl Read + Send + 'static) -> thread::JoinHandle<String> {
