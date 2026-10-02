@@ -137,7 +137,7 @@ export function InstalledView({
       )}
 
       {state.plugins.length === 0 ? (
-        <p className="empty muted">No plugins installed yet. Find some under Browse.</p>
+        <p className="empty muted">No plugins installed yet. Find some under Browse Plugins.</p>
       ) : (
         <ul className="rows">
           {plugins.map((p) => {

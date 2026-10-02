@@ -849,3 +849,10 @@ ul.plain li + li {
     animation: none;
   }
 }
+
+.app-version {
+  margin-left: 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted, #8b93a7);
+}
