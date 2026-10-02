@@ -107,6 +107,9 @@ export function BrowseView({ manager, planFlow }: { manager: Manager; planFlow: 
                     <span className="version" title={entry.version}>
                       {shortVersion(entry.version)}
                     </span>
+                    <span className="badge neutral" title={`License: ${entry.license}`}>
+                      {entry.license}
+                    </span>
                   </div>
                   <div className="muted authors">by {entry.authors}</div>
                   <div className="summary">{entry.shortDescription}</div>
