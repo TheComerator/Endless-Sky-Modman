@@ -590,6 +590,7 @@ ul.plain li + li {
   display: flex;
   gap: 8px;
   align-items: baseline;
+  flex-wrap: wrap;
 }
 
 .authors {
