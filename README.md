@@ -30,6 +30,7 @@ See `CLAUDE.md` for project standards, the confirmed plugin catalog schema, and 
 - [x] Plugin license shown as a badge in the catalog browser
 - [x] Log files older than 14 days are pruned automatically on startup
 - [x] Missing-after-profile-switch plugins shown as a real list with a "Download all" button, replacing a button pile that could grow unbounded
+- [x] Installing a plugin whose identity duplicates an existing (usually unmanaged) folder is now blocked instead of silently orphaning one of the two
 
 ### 🔜 Remaining
 
@@ -39,7 +40,6 @@ See `CLAUDE.md` for project standards, the confirmed plugin catalog schema, and 
 
 - Conflicts outside install plans can only be overridden, not auto-resolved
 - A "fix" suggestion starts a new plan; the original action must be re-run after
-- An ambiguous unmanaged-plugin match could create a duplicate folder
 
 ### ℹ️ Known limitations (by design)
 
