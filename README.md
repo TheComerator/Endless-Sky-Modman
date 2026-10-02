@@ -32,6 +32,7 @@ See `CLAUDE.md` for project standards, the confirmed plugin catalog schema, and 
 - [x] Missing-after-profile-switch plugins shown as a real list with a "Download all" button, replacing a button pile that could grow unbounded
 - [x] Installing a plugin whose identity duplicates an existing (usually unmanaged) folder is now blocked instead of silently orphaning one of the two
 - [x] Endless Sky installed under a Flatpak build of Steam is now detected (its own non-standard data path, confirmed from Steam's actual Flatpak manifest)
+- [x] Conflicts in enable and profile-switch plans can now offer "disable the other side instead", not just an override — previously only install plans had this
 
 ### 🔜 Remaining
 
@@ -39,7 +40,6 @@ See `CLAUDE.md` for project standards, the confirmed plugin catalog schema, and 
 
 ### ⚠️ Known gaps (not v1 blockers)
 
-- Conflicts outside install plans can only be overridden, not auto-resolved
 - A "fix" suggestion starts a new plan; the original action must be re-run after
 
 ### ℹ️ Known limitations (by design)
