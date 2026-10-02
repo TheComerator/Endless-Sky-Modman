@@ -9,7 +9,8 @@ A working plan, in order. Items marked **(you)** need a person with accounts or 
 - [ ] **(you)** Confirm the repository is public, issues are enabled, and "Discussions" is on if you want a Q&A place.
 - [ ] Replace the README's "Install" notes with real file names once the release exists.
 - [ ] Create the `v0.1.0` GitHub Release with `docs/release-notes-v0.1.0.md` as its body.
-  - Today's CI workflow builds on **every push to `main`** and refreshes one draft prerelease. For a real release, change it to run on version **tags** (`v*`) so a public release is a deliberate act, and paste the notes in. Easy change; ask when ready.
+  - Done: the release workflow now runs on version **tags** (`v*`) and makes a draft release with the installers, signed update files and `latest.json`. To release: bump the version in `app/src-tauri/tauri.conf.json` and `app/src-tauri/Cargo.toml`, commit, then `git tag v0.1.0 && git push origin v0.1.0`. When CI finishes, paste the notes into the draft and publish it.
+- [ ] **(you)** Add the GitHub secret `TAURI_SIGNING_PRIVATE_KEY` (repo → Settings → Secrets and variables → Actions) with the contents of the private update key, and keep a backup of that key somewhere safe (a password manager). If it's lost, existing installs can never be updated automatically and would need a manual reinstall.
 - [ ] **(you)** Read each community's posting rules (Discord channel purpose, subreddit rules on self-promotion) before posting.
 
 ## 2. Launch week
@@ -30,7 +31,7 @@ A working plan, in order. Items marked **(you)** need a person with accounts or 
 
 ## 4. Later, when there's demand
 
-- **In-app update notices.** Tauri's updater needs signing keys, so do it after code signing. A lighter step first: have the app check the GitHub release feed and show "a new version is available".
+- **In-app updates: built.** The app checks GitHub for a newer signed release at startup (switchable in Settings), shows a banner, and installs only on a click and only when no plan is in flight and the game isn't running. This uses a project update key, which is separate from Windows code signing. Still to confirm on a real machine: whether Windows SmartScreen appears for updater-downloaded installers.
 - **Optional hosted profile sharing** (shareable codes). Shelved on purpose in the v1 design because it needs a server; revisit only if people ask.
 - **Manual add of a plugin not in the catalog** (drag a zip or folder), also deliberately out of v1.
 - **Plugin author tooling**: a "validate my `plugin.txt`" view showing how the manager reads a plugin's dependencies, which gives authors a reason to adopt it.

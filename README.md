@@ -32,7 +32,7 @@ Download the installer for your system from the [latest release](https://github.
 | **macOS** | `.dmg` | Not yet tested by hand. |
 | **Linux** | `.AppImage`, `.deb` or `.rpm` | Detection logic is tested; the packaged app is lightly tested. |
 
-**The installers are not code-signed yet.** Windows SmartScreen may say "Windows protected your PC" on first launch: click **More info → Run anyway**. macOS may say the app is from an unidentified developer: right-click it and choose **Open**. This is expected for a new unsigned app, and signing is planned (see the [launch plan](docs/launch/next-steps.md)). If you'd rather not run an unsigned installer, you can [build it from source](#building-from-source).
+**The installers are not code-signed yet.** Windows SmartScreen may say "Windows protected your PC" on first launch: click **More info → Run anyway**. macOS may say the app is from an unidentified developer: right-click it and choose **Open**. This is expected for a new unsigned app (the installer's own update-signing is separate and already in place), and code signing is planned (see the [launch plan](docs/launch/next-steps.md)). If you'd rather not run an unsigned installer, you can [build it from source](#building-from-source).
 
 ## First run
 
@@ -50,7 +50,8 @@ The manager is careful because it edits files your game reads:
 - It **backs up `plugins.txt`** before every write (`plugins.txt.esmm-bak` next to it) and writes atomically, so a crash can't leave a half-written file.
 - Downloads are **HTTPS only**, size-limited, and unzipped with protection against archives that try to write outside their folder.
 - Every change is **shown first and committed together**; a plugin is never left half-installed.
-- The plugin list and update checks use the same official catalog the game's own plugin page uses; nothing is sent anywhere else, and there is no telemetry.
+- The plugin list and update checks use the same official catalog the game's own plugin page uses. The only other thing the app contacts is GitHub, once at startup, to ask whether a newer version of the manager exists (it never installs anything without your click, and you can turn the check off under **Settings → Updates**). There is no telemetry and nothing about you or your plugins is sent anywhere.
+- **Updates to the manager itself** are only accepted if they're signed with this project's own key, so a tampered download is rejected.
 
 ## How it differs from ESLauncher2
 
