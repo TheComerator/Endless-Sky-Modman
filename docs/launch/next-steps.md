@@ -32,7 +32,7 @@ A working plan, in order. Items marked **(you)** need a person with accounts or 
 ## 4. Later, when there's demand
 
 - **In-app updates: built.** The app checks GitHub for a newer signed release at startup (switchable in Settings), shows a banner, and installs only on a click and only when no plan is in flight and the game isn't running. This uses a project update key, which is separate from Windows code signing. Still to confirm on a real machine: whether Windows SmartScreen appears for updater-downloaded installers.
-- **Share profiles as a file (approved, starts after v0.1.2 is tested):** Export/Import on the Profiles page, serverless; imported plugins are matched by name against the official catalog and missing ones installed with the existing banner.
+- **Share profiles as a file (built, ships in the next release):** Export/Import on the Profiles page, serverless; imported plugins are matched by name against the official catalog and missing ones installed with the existing banner.
 - **Optional hosted profile sharing** (shareable codes). Shelved on purpose in the v1 design because it needs a server; revisit only if people ask.
 - **Manual add of a plugin not in the catalog** (drag a zip or folder), also deliberately out of v1.
 - **Plugin author tooling**: a "validate my `plugin.txt`" view showing how the manager reads a plugin's dependencies, which gives authors a reason to adopt it.

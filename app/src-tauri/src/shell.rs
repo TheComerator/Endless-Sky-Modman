@@ -1220,6 +1220,36 @@ impl Shell {
         })
     }
 
+    /// Writes `name` to `path` as a share file (see `profiles::export_profile`).
+    pub fn export_profile(&self, name: &str, path: &Path) -> CmdResult<()> {
+        let _op = lock(&self.op_lock);
+        let (_, snap) = self.snapshot()?;
+        let store = ProfileStore::load(&snap.paths.profiles)?;
+        let profile = store
+            .profiles
+            .get(name)
+            .ok_or_else(|| CmdError::not_found(format!("No profile named {name:?}.")))?;
+        let text = profiles::export_profile(name, profile)?;
+        std::fs::write(path, text)
+            .map_err(|e| CmdError::io(format!("Couldn't save the profile file: {e}")))
+    }
+
+    /// Reads a share file from `path` into a new profile (not activated: switching to it goes
+    /// through the normal checked plan). Returns the stored name, numbered if it was taken.
+    pub fn import_profile(&self, path: &Path) -> CmdResult<String> {
+        let size = std::fs::metadata(path)
+            .map_err(|e| CmdError::io(format!("Couldn't read that file: {e}")))?
+            .len();
+        if size > profiles::MAX_SHARE_BYTES {
+            return Err(CmdError::invalid("That file is too large to be a profile."));
+        }
+        let text = std::fs::read_to_string(path).map_err(|_| {
+            CmdError::invalid("That isn't a profile file made by Endless Sky Mod Manager.")
+        })?;
+        let (name, profile) = profiles::parse_shared_profile(&text)?;
+        self.with_profiles(|store, _| Ok(store.insert_unique(&name, profile)?))
+    }
+
     pub fn delete_profile(&self, name: &str) -> CmdResult<()> {
         self.with_profiles(|store, _| {
             if store.active.as_deref() == Some(name) {

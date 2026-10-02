@@ -1,3 +1,4 @@
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { useState } from "react";
 
 import { api, asCmdError } from "../api";
@@ -40,12 +41,45 @@ export function ProfilesView({ manager, planFlow, notify }: { manager: Manager; 
     }
   };
 
+  const exportProfile = async (profileName: string) => {
+    try {
+      const path = await save({
+        title: `Export the profile ${profileName}`,
+        defaultPath: `${profileName.replace(/[\/:*?"<>|]/g, "_")}.esmm-profile.json`,
+        filters: [{ name: "Profile", extensions: ["json"] }],
+      });
+      if (!path) return;
+      await api.exportProfile(profileName, path);
+      notify("success", `Saved ${profileName} to a file you can share.`);
+    } catch (e) {
+      notify("error", asCmdError(e).message);
+    }
+  };
+
+  const importProfile = async () => {
+    try {
+      const path = await open({
+        title: "Import a profile",
+        multiple: false,
+        directory: false,
+        filters: [{ name: "Profile", extensions: ["json"] }],
+      });
+      if (typeof path !== "string") return;
+      const stored = await api.importProfile(path);
+      notify("success", `Imported ${stored}. Switch to it to use it; any plugins you don't have are offered for install.`);
+      await refreshState();
+    } catch (e) {
+      notify("error", asCmdError(e).message);
+    }
+  };
+
   return (
     <div className="view">
       <p className="muted intro">
         A profile is a set of enabled plugins. Switching profiles only enables and disables
         plugins; it never installs or deletes anything. Changes you make while a profile is
-        active are saved to it.
+        active are saved to it. Use Export to share a profile as a file, and Import to add one
+        someone sent you.
       </p>
       <ul className="rows">
         {profiles.profiles.map((p) => {
@@ -98,6 +132,9 @@ export function ProfilesView({ manager, planFlow, notify }: { manager: Manager; 
                   <button className="small" onClick={() => startRename(p.name)}>
                     Rename
                   </button>
+                  <button className="small" onClick={() => void exportProfile(p.name)}>
+                    Export…
+                  </button>
                   {!active && (
                     <button
                       className="small ghost-danger"
@@ -130,6 +167,9 @@ export function ProfilesView({ manager, planFlow, notify }: { manager: Manager; 
         <input placeholder="New profile name" value={name} onChange={(e) => setName(e.target.value)} />
         <button type="submit" className="primary" disabled={!name.trim()}>
           Save current plugins as new profile
+        </button>
+        <button type="button" onClick={() => void importProfile()}>
+          Import profile…
         </button>
       </form>
     </div>
