@@ -27,6 +27,9 @@ See `CLAUDE.md` for project standards, the confirmed plugin catalog schema, and 
 - [x] First real-world run verified — Steam detect → browse → install → launch, plugin confirmed active in-game
 - [x] App icon — ship-with-engine-trail logo replacing the default Tauri placeholder
 - [x] Manual UI pass (profile rename, enable/disable toggle, logging) verified against the real Windows app and its log file — found and fixed a missing "all mods are up to date" confirmation
+- [x] Plugin license shown as a badge in the catalog browser
+- [x] Log files older than 14 days are pruned automatically on startup
+- [x] Missing-after-profile-switch plugins shown as a real list with a "Download all" button, replacing a button pile that could grow unbounded
 
 ### 🔜 Remaining
 
@@ -37,16 +40,11 @@ See `CLAUDE.md` for project standards, the confirmed plugin catalog schema, and 
 - Conflicts outside install plans can only be overridden, not auto-resolved
 - A "fix" suggestion starts a new plan; the original action must be re-run after
 - An ambiguous unmanaged-plugin match could create a duplicate folder
-- Old log files are never automatically pruned
 
 ### ℹ️ Known limitations (by design)
 
 - A stalled download can't be cancelled at the network layer directly
 - Steam-as-Flatpak isn't auto-detected; AppImage installs are added manually
 - Updating a plugin with a brand-new dependency reports it but won't auto-install it
-
-### 💡 Future ideas (not scheduled)
-
-- Show each plugin's license (MIT, GPL, CC-BY-SA, etc.) as a badge in the catalog browser
 
 Full detail, including the reasoning behind each decision: [`CLAUDE.md`](CLAUDE.md#current-status).
