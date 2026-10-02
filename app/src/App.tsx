@@ -1,4 +1,5 @@
-import { useCallback, useRef, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api, asCmdError } from "./api";
 import type { ManagerState } from "./bindings/ManagerState";
@@ -23,12 +24,24 @@ function TopBar({ manager, planFlow, notify }: { manager: Manager; planFlow: Pla
   const install = state?.install ?? null;
   const profiles = state?.profiles;
   const running = game === "running";
+  // The running app's own version, so a bug report or an update check can always be matched to it.
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  useEffect(() => {
+    getVersion()
+      .then(setAppVersion)
+      .catch(() => setAppVersion(null));
+  }, []);
 
   return (
     <header className="topbar">
       <div className="brand">
         <span className="brand-mark" aria-hidden="true" />
         Endless Sky Mod Manager
+        {appVersion && (
+          <span className="app-version" title="The version of this app">
+            v{appVersion}
+          </span>
+        )}
       </div>
       <div className="topbar-controls">
         <span className="chip" title={install?.configDir}>
@@ -252,7 +265,7 @@ export default function App() {
   const updates = state?.plugins.filter((p) => p.update.kind === "available").length ?? 0;
   const tabs: [Tab, string, string | null][] = [
     ["installed", "Installed", state?.plugins.length ? String(state.plugins.length) : null],
-    ["browse", "Browse", null],
+    ["browse", "Browse Plugins", null],
     ["profiles", "Profiles", null],
     ["settings", "Settings", null],
   ];
