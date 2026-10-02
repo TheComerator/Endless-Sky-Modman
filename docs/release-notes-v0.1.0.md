@@ -24,7 +24,7 @@ The other files (`.sig`, `.tar.gz`, `latest.json`) are for the app's built-in up
 
 ## Known first-release caveats
 
-- **Unsigned installers.** Windows SmartScreen will warn ("More info → Run anyway"); macOS will ask you to right-click → Open. Code signing is planned.
+- **Unsigned installers.** Windows SmartScreen will warn ("More info → Run anyway"); on macOS the app may be reported as "damaged" on first launch (it isn't; it's just unsigned). After dragging it to Applications, run `xattr -cr "/Applications/Endless Sky Mod Manager.app"` once in Terminal, then open it. Code signing is planned.
 - **Tested on:** Windows 11 with a Steam install of Endless Sky 0.11. The core logic has an automated test suite. Linux and macOS builds are produced automatically but have had little hands-on testing, so reports from those systems are especially welcome.
 - **One assumption to confirm:** for Endless Sky run through *Flatpak* Steam, the app assumes the game saves to the normal home folder. If your plugins end up somewhere else, add that folder under Settings and tell us the path.
 

@@ -31,10 +31,16 @@ Download the installer for your system from the [latest release](https://github.
 | System | Download | Notes |
 |---|---|---|
 | **Windows** | `…-setup.exe` (recommended) or `.msi` | The `.exe` installs for your user only, with no admin prompt. The `.msi` is mainly for managed or corporate PCs. |
-| **macOS** | `.dmg` | Not yet tested by hand. |
+| **macOS** | `.dmg` (Apple Silicon Macs only) | Needs one extra step on first open, see below. |
 | **Linux** | `.AppImage`, `.deb` or `.rpm` | Detection logic is tested; the packaged app is lightly tested. |
 
-**The installers are not code-signed yet.** Windows SmartScreen may say "Windows protected your PC" on first launch: click **More info → Run anyway**. macOS may say the app is from an unidentified developer: right-click it and choose **Open**. This is expected for a new unsigned app (the installer's own update-signing is separate and already in place), and code signing is planned (see the [launch plan](docs/launch/next-steps.md)). If you'd rather not run an unsigned installer, you can [build it from source](#building-from-source).
+**The installers are not code-signed yet.** Windows SmartScreen may say "Windows protected your PC" on first launch: click **More info → Run anyway**. On macOS the first launch may say the app is "damaged and can't be opened". It isn't: that's how macOS reports any app that isn't signed with a paid Apple certificate. Drag the app into Applications, then run this once in Terminal and open it again:
+
+```bash
+xattr -cr "/Applications/Endless Sky Mod Manager.app"
+```
+
+(If the `.dmg` itself won't open, run `xattr -cr` on the downloaded `.dmg` file first.) This is expected for a new unsigned app (the installer's own update-signing is separate and already in place), and code signing is planned (see the [launch plan](docs/launch/next-steps.md)). If you'd rather not run an unsigned installer, you can [build it from source](#building-from-source).
 
 ## First run
 
