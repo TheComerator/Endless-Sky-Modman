@@ -35,8 +35,10 @@ export function useManager(notify: Notify) {
           `Linked ${next.adopted.length} existing plugin(s) to the catalog: ${next.adopted.join(", ")}.`,
         );
       }
+      return next;
     } catch (e) {
       setStateError(asCmdError(e).message);
+      return null;
     }
   }, []);
 
@@ -51,7 +53,14 @@ export function useManager(notify: Notify) {
           notifyRef.current("warn", `Couldn't reach the catalog; showing the cached copy. (${next.source.error})`);
         }
         // Update status and adoption both depend on the catalog.
-        await refreshState();
+        const nextState = await refreshState();
+        // Only on a user-requested refresh, not the silent load on mount: tell them
+        // outright when there was nothing to find, since the alternative (an update
+        // being available) is already obvious from the badge and "Update all" button.
+        if (refresh && nextState && next.source.kind !== "offline") {
+          const updates = nextState.plugins.filter((p) => p.update.kind === "available").length;
+          if (updates === 0) notifyRef.current("info", "All mods are up to date.");
+        }
       } catch (e) {
         setCatalogError(asCmdError(e).message);
       } finally {

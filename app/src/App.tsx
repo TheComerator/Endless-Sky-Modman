@@ -164,7 +164,9 @@ function Banners({
 export default function App() {
   const { toasts, notify, dismiss } = useToasts();
   const manager = useManager(notify);
-  const onCommitted = useCallback(() => manager.refreshState(), [manager.refreshState]);
+  const onCommitted = useCallback(async () => {
+    await manager.refreshState();
+  }, [manager.refreshState]);
   const planFlow = usePlanFlow(notify, onCommitted);
   const [tab, setTab] = useState<Tab>("installed");
   const { state } = manager;

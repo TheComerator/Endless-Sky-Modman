@@ -26,10 +26,10 @@ See `CLAUDE.md` for project standards, the confirmed plugin catalog schema, and 
 - [x] Windows build & test environment verified (136 core tests, clippy, fmt)
 - [x] First real-world run verified — Steam detect → browse → install → launch, plugin confirmed active in-game
 - [x] App icon — ship-with-engine-trail logo replacing the default Tauri placeholder
+- [x] Manual UI pass (profile rename, enable/disable toggle, logging) verified against the real Windows app and its log file — found and fixed a missing "all mods are up to date" confirmation
 
 ### 🔜 Remaining
 
-- [ ] Manual click-through of update-all / rename / logging UI (Xvfb pass)
 - [ ] Review the inferred Tauri shell & logging architecture decisions
 
 ### ⚠️ Known gaps (not v1 blockers)
