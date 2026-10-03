@@ -10,7 +10,7 @@
 
 **Install, update and switch *Endless Sky* plugins without unzipping anything.**
 
-**[⬇ Download the latest version](https://github.com/TheComerator/Endless-Sky-Mod-Manager/releases/latest)** for Windows, macOS or Linux (details under [Install](#install)).
+**[⬇ Download the latest version](https://github.com/TheComerator/Endless-Sky-Modman/releases/latest)** for Windows, macOS or Linux (details under [Install](#install)).
 
 A small desktop app that browses the official community plugin catalog and manages the plugins in your game for you, in the spirit of r2modman. It checks that plugins work together *before* it changes anything, keeps separate profiles for different playthroughs, and never touches your game while it's running.
 
@@ -46,7 +46,7 @@ It does **not** manage the game itself (versions, multiple builds). If you want 
 
 ## Install
 
-Download the installer for your system from the [latest release](https://github.com/TheComerator/Endless-Sky-Mod-Manager/releases/latest).
+Download the installer for your system from the [latest release](https://github.com/TheComerator/Endless-Sky-Modman/releases/latest).
 
 | System | Download | Notes |
 |---|---|---|
@@ -98,7 +98,7 @@ On Linux and macOS the same pieces live in the platform's standard data, cache a
 
 ## Reporting a problem
 
-Please [open an issue](https://github.com/TheComerator/Endless-Sky-Mod-Manager/issues/new/choose). The form asks what you were doing and for the relevant part of the log. The log is the single most useful thing you can include: see the table above for where it is.
+Please [open an issue](https://github.com/TheComerator/Endless-Sky-Modman/issues/new/choose). The form asks what you were doing and for the relevant part of the log. The log is the single most useful thing you can include: see the table above for where it is.
 
 Questions, ideas and plugin-author feedback are welcome too. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
