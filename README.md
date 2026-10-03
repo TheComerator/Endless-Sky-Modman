@@ -4,7 +4,7 @@
 
 <h1 align="center">Endless Sky Mod Manager</h1>
 
-![Status](https://img.shields.io/badge/status-v0.1%20first%20release-4ADE9C)
+![Status](https://img.shields.io/badge/status-early%20release-4ADE9C)
 ![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-7AA2FF)
 ![License](https://img.shields.io/badge/license-MIT-C792EA)
 
@@ -14,7 +14,7 @@
 
 A small desktop app that browses the official community plugin catalog and manages the plugins in your game for you, in the spirit of r2modman. It checks that plugins work together *before* it changes anything, keeps separate profiles for different playthroughs, and never touches your game while it's running.
 
-> This is an unofficial community tool, not made by or affiliated with the *Endless Sky* developers. It's an early (v0.1) release. It works on a real Steam install and the core logic is well tested, but it hasn't had many eyes on it yet. Bug reports are very welcome, see [Reporting a problem](#reporting-a-problem).
+> This is an unofficial community tool, not made by or affiliated with the *Endless Sky* developers. It's an early release. It works on a real Steam install and the core logic is well tested, but it hasn't had many eyes on it yet. Bug reports are very welcome, see [Reporting a problem](#reporting-a-problem).
 
 ## Screenshots
 
