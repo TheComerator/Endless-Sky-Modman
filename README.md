@@ -2,7 +2,7 @@
   <img src="docs/icon.png" alt="Endless Sky Mod Manager icon" width="200">
 </p>
 
-<h1 align="center">Endless Sky Mod Man</h1>
+<h1 align="center">Endless Sky Mod Manager</h1>
 
 ![Status](https://img.shields.io/badge/status-early%20release-4ADE9C)
 ![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-7AA2FF)
