@@ -30,4 +30,4 @@ The other files (`.sig`, `.tar.gz`, `latest.json`) are for the built-in updater;
 
 Please open an issue, including the log (see the README for its location).
 
-Changes since v0.1.0: see [v0.1.0's notes](https://github.com/TheComerator/Endless-Sky-Modman/releases/tag/v0.1.0) for the full feature list.
+Changes since v0.1.0: see [v0.1.0's notes](https://github.com/TheComerator/Endless-Sky-Mod-Manager/releases/tag/v0.1.0) for the full feature list.
