@@ -1,5 +1,7 @@
 # Architecture review checklist for Jon
 
+**Answered by Jon 2026-10-07:** 1 keep, 2 keep, 3 keep, 4 keep, 5 keep 14 days (a Settings log-level switch can wait until detailed logs are needed from users), 6 leave as is (no Linux machine; ask for a Flatpak Steam tester after launch), 7 manual click-through still to do.
+
 The only roadmap item that needs a person rather than more code. These are the design
 calls made by inference (no one had confirmed them) in decisions K, L and the game-install
 work. Each has what was built, why, and the alternative. Reply with ✅ keep or ✏️ change;

@@ -7,6 +7,7 @@
 ![Status](https://img.shields.io/badge/status-early%20release-4ADE9C)
 ![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-7AA2FF)
 ![License](https://img.shields.io/badge/license-MIT-C792EA)
+[![Tests](https://github.com/TheComerator/Endless-Sky-Modman/actions/workflows/ci.yml/badge.svg)](https://github.com/TheComerator/Endless-Sky-Modman/actions/workflows/ci.yml)
 
 **Install, update and switch *Endless Sky* plugins without unzipping anything.**
 
