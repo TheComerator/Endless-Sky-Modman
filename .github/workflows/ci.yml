@@ -52,7 +52,19 @@ jobs:
 
       # `cargo test` also regenerates the TypeScript types in app/src/bindings.
       - name: Rust tests (core and app)
-        run: cargo test --workspace
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --workspace 2>&1 | tee test.log
+
+      # Log files need a GitHub sign-in to read, but annotations are public, so on failure
+      # copy the useful lines (failed tests, panics, compile errors) into one.
+      - name: summarize test failures
+        if: failure()
+        shell: bash
+        run: |
+          body=$(grep -E "^(error|test .* FAILED|failures:|---- |thread '|  left:| right:|assertion)" test.log | head -60 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+          echo "::error title=Rust test failures::${body}"
 
       - name: generated types match what is committed
         run: git diff --exit-code -- app/src/bindings
