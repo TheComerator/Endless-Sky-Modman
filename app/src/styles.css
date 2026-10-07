@@ -393,6 +393,19 @@ main {
   background: color-mix(in srgb, var(--warn) 10%, var(--panel));
 }
 
+/* The top-of-page warnings (plugins changed outside the manager, game running) need to be
+   noticed, so they get a bright amber edge and a soft glow. The smaller in-dialog callouts keep
+   the quieter style above. */
+.banner.warn {
+  border: 1px solid var(--warn);
+  background: color-mix(in srgb, var(--warn) 20%, var(--panel));
+  color: color-mix(in srgb, var(--warn) 18%, var(--text));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--warn) 35%, transparent),
+    0 0 22px color-mix(in srgb, var(--warn) 45%, transparent),
+    0 0 48px color-mix(in srgb, var(--warn) 20%, transparent);
+}
+
 .banner.info,
 .callout.info {
   border-color: color-mix(in srgb, var(--accent) 45%, transparent);
