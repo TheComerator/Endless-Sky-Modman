@@ -177,7 +177,7 @@ function Banners({
               Update {active} to match
             </button>
             <button className="small" onClick={() => void planFlow.start({ kind: "applyProfile", name: active })}>
-              Restore {active}
+              Apply profile {active}
             </button>
             <button className="small" onClick={() => goTo("profiles")}>
               Save as new profile…
