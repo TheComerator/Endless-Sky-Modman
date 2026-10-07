@@ -25,6 +25,17 @@ export function ProfilesView({ manager, planFlow, notify }: { manager: Manager; 
     }
   };
 
+  const createEmpty = async () => {
+    try {
+      const stored = await api.createEmptyProfile(name);
+      notify("success", `Created the empty profile ${stored}. Switch to it to turn every plugin off; nothing is uninstalled.`);
+      setName("");
+      await refreshState();
+    } catch (e) {
+      notify("error", asCmdError(e).message);
+    }
+  };
+
   const startRename = (current: string) => {
     setRenaming(current);
     setRenameValue(current);
@@ -78,8 +89,8 @@ export function ProfilesView({ manager, planFlow, notify }: { manager: Manager; 
       <p className="muted intro">
         A profile is a set of enabled plugins. Switching profiles only enables and disables
         plugins; it never installs or deletes anything. Changes you make while a profile is
-        active are saved to it. Use Export to share a profile as a file, and Import to add one
-        someone sent you.
+        active are saved to it. Use "New empty profile" for a vanilla run (every plugin off, nothing
+        uninstalled), Export to share a profile as a file, and Import to add one someone sent you.
       </p>
       <ul className="rows">
         {profiles.profiles.map((p) => {
@@ -125,9 +136,14 @@ export function ProfilesView({ manager, planFlow, notify }: { manager: Manager; 
                 <div className="row-actions">
                   <button
                     className={active ? "small" : "primary small"}
+                    title={
+                      active
+                        ? "Turn plugins on and off so they match this profile exactly again, undoing changes made outside the manager"
+                        : "Make this the active profile: plugins are turned on and off to match it"
+                    }
                     onClick={() => void planFlow.start({ kind: "applyProfile", name: p.name })}
                   >
-                    {active ? "Re-apply" : "Switch"}
+                    {active ? "Restore" : "Switch"}
                   </button>
                   <button className="small" onClick={() => startRename(p.name)}>
                     Rename
@@ -167,6 +183,9 @@ export function ProfilesView({ manager, planFlow, notify }: { manager: Manager; 
         <input placeholder="New profile name" value={name} onChange={(e) => setName(e.target.value)} />
         <button type="submit" className="primary" disabled={!name.trim()}>
           Save current plugins as new profile
+        </button>
+        <button type="button" disabled={!name.trim()} onClick={() => void createEmpty()}>
+          New empty profile
         </button>
         <button type="button" onClick={() => void importProfile()}>
           Import profile…

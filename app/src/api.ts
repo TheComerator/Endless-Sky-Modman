@@ -41,6 +41,7 @@ export const api = {
     invoke<CommitView>("commit_plan", { planId, overrideIssues }),
 
   createProfile: (name: string) => invoke<string>("create_profile", { name }),
+  createEmptyProfile: (name: string) => invoke<string>("create_empty_profile", { name }),
   renameProfile: (oldName: string, newName: string) =>
     invoke<string>("rename_profile", { oldName, newName }),
   exportProfile: (name: string, path: string) => invoke<void>("export_profile", { name, path }),

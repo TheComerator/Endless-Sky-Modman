@@ -1026,6 +1026,37 @@ fn drift_is_reported_and_resolvable() {
 }
 
 #[test]
+fn an_empty_profile_switches_everything_off_without_uninstalling() {
+    let w = World::new();
+    w.add("A", "A", "1", PluginDeps::default());
+    w.add("B", "B", "1", PluginDeps::default());
+    w.install("A");
+    w.install("B");
+    w.state(); // creates the "Default" profile
+
+    assert_eq!(w.shell.create_empty_profile("Vanilla").unwrap(), "Vanilla");
+    assert_eq!(
+        kind(&w.shell.create_empty_profile("Vanilla").unwrap_err()),
+        "invalid",
+        "a taken name is refused"
+    );
+    let profiles = w.state().profiles;
+    assert_eq!(
+        profiles.active.as_deref(),
+        Some("Default"),
+        "not activated by creating it"
+    );
+
+    let ticket = w.shell.begin_planning();
+    let plan = w.shell.plan_apply_profile(&ticket, "Vanilla").unwrap();
+    assert!(plan.issues.is_empty());
+    w.shell.commit_plan(plan.plan_id, false).unwrap();
+    assert!(!w.plugin("A").enabled);
+    assert!(!w.plugin("B").enabled);
+    assert_eq!(w.state().plugins.len(), 2, "both are still installed");
+}
+
+#[test]
 fn the_active_profile_cannot_be_deleted() {
     let w = World::new();
     w.state();

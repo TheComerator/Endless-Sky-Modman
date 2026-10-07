@@ -1208,6 +1208,13 @@ impl Shell {
         })
     }
 
+    /// A profile with nothing enabled, for a vanilla run. Unlike `create_profile` it is not made
+    /// active and doesn't touch `plugins.txt`: switching to it is the usual checked plan, which
+    /// turns every installed plugin off while leaving them all installed.
+    pub fn create_empty_profile(&self, name: &str) -> CmdResult<String> {
+        self.with_profiles(|store, _| Ok(store.insert(name, profiles::Profile::default())?))
+    }
+
     /// Returns the stored (trimmed) name, same as `create_profile`.
     pub fn rename_profile(&self, old_name: &str, new_name: &str) -> CmdResult<String> {
         self.with_profiles(|store, _| Ok(store.rename(old_name, new_name)?))
