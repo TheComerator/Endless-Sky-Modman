@@ -963,12 +963,13 @@ fn apply_profile_conflict_resolved_via_resolve_conflict() {
         },
     );
     w.add("Z", "Z", "1", PluginDeps::default());
-    w.install("Y");
+    // Installing Y while Z is enabled would already conflict, so install Z and switch it off
+    // first: the profile below re-enabling it is what should surface the conflict, not the
+    // install.
     w.install("Z");
-    // Both installed and enabled by default would already conflict, so disable Z first: the
-    // profile below re-enabling it is what should surface the conflict, not the install.
     w.set_enabled("Z", false);
-    assert_eq!(w.shell.create_profile("Clash").unwrap(), "Clash");
+    w.install("Y");
+    w.state(); // creates the "Default" profile
     let mut store = ProfileStore::load(&w.paths().profiles).unwrap();
     store
         .insert(
