@@ -269,6 +269,14 @@ pub async fn create_profile(state: State<'_, AppState>, name: String) -> CmdResu
 }
 
 #[tauri::command]
+pub async fn create_empty_profile(state: State<'_, AppState>, name: String) -> CmdResult<String> {
+    blocking(&state, "create_empty_profile", move |s| {
+        s.create_empty_profile(&name)
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn rename_profile(
     state: State<'_, AppState>,
     old_name: String,
