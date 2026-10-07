@@ -397,13 +397,38 @@ main {
    noticed, so they get a bright amber edge and a soft glow. The smaller in-dialog callouts keep
    the quieter style above. */
 .banner.warn {
-  border: 1px solid var(--warn);
-  background: color-mix(in srgb, var(--warn) 20%, var(--panel));
-  color: color-mix(in srgb, var(--warn) 18%, var(--text));
+  border: 1px solid color-mix(in srgb, var(--warn) 80%, white);
+  background: color-mix(in srgb, var(--warn) 24%, var(--panel));
+  color: color-mix(in srgb, var(--warn) 22%, var(--text));
   box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--warn) 35%, transparent),
-    0 0 22px color-mix(in srgb, var(--warn) 45%, transparent),
-    0 0 48px color-mix(in srgb, var(--warn) 20%, transparent);
+    0 0 0 1px color-mix(in srgb, var(--warn) 45%, transparent),
+    0 0 26px color-mix(in srgb, var(--warn) 55%, transparent),
+    0 0 56px color-mix(in srgb, var(--warn) 26%, transparent);
+  animation: warn-breathe 4s ease-in-out infinite;
+}
+
+/* A slow breathing glow: about four seconds per cycle, never flashing. */
+@keyframes warn-breathe {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--warn) 35%, transparent),
+      0 0 14px color-mix(in srgb, var(--warn) 30%, transparent),
+      0 0 30px color-mix(in srgb, var(--warn) 12%, transparent);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--warn) 60%, transparent),
+      0 0 32px color-mix(in srgb, var(--warn) 65%, transparent),
+      0 0 70px color-mix(in srgb, var(--warn) 32%, transparent);
+  }
+}
+
+/* Anyone who has turned animations off in their system settings gets the steady glow. */
+@media (prefers-reduced-motion: reduce) {
+  .banner.warn {
+    animation: none;
+  }
 }
 
 .banner.info,
