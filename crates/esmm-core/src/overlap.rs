@@ -1,16 +1,21 @@
 //! Plugin overlap detection: which plugins touch the same game content.
 //!
-//! The game loads plugin folders in sorted (alphabetical) order, reads each one's `data`
-//! files in that order, and a later full definition of an object (say `ship "Hornet"`)
-//! replaces an earlier one. Lines that only `add` to or `remove` from an object layer on top
-//! of whatever is there. The manager can't see inside the game, but it can read each plugin's
-//! files and warn *before* a plugin is activated that it would replace, or be replaced by,
-//! another one. Plugin data is compared with other plugins only, never with the base game
-//! (plugins are assumed to override vanilla files).
+//! The game loads plugin folders in sorted (alphabetical) order and reads each one's `data`
+//! files in that order. When an object (say `ship "Hornet"`) appears again in a later plugin,
+//! the game does not start over: it loads the new definition *on top of* the existing object
+//! (`UniverseObjects::LoadFile`), so each field the later definition sets overrides the
+//! earlier value, fields it doesn't mention are left alone, and `add` / `remove` lines layer
+//! onto lists. Only an explicit `overwrite` line before the definition wipes the object first.
 //!
-//! Each plugin is read once into a small [`PluginIndex`] (what it defines, plus its image and
-//! sound paths) that is cached on disk with a fingerprint, so only plugins that changed are
-//! read again. Comparing indexes is then cheap, and works for disabled plugins too.
+//! So two plugins clash on an object when the later one sets a field the earlier one also
+//! touched. That's what this module finds, and it warns *before* a plugin is activated. Plugin
+//! data is compared with other plugins only, never with the base game (plugins are assumed to
+//! override vanilla files).
+//!
+//! Each plugin is read once into a small [`PluginIndex`] (what it defines and which fields it
+//! touches, plus its image and sound paths) that is cached on disk with a fingerprint, so only
+//! plugins that changed are read again. Comparing indexes is then cheap, and works for disabled
+//! plugins too. Every data file is read in full, however large.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -24,16 +29,18 @@ use crate::datanode::{self, Node};
 use crate::files;
 
 /// Bump when the index layout or its classification rules change, so stale caches are rebuilt.
-pub const INDEX_FORMAT: u32 = 1;
+pub const INDEX_FORMAT: u32 = 2;
 
 /// How a plugin's top-level definition treats an object that may already exist.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Mode {
-    /// Only `add` / `remove` lines: layers onto whatever is there. Not a conflict.
+    /// Only `add` / `remove` lines: layers onto whatever is there and never overrides a value.
     Extends,
-    /// A full definition (or one marked `overwrite`): replaces any earlier one.
-    Replaces,
+    /// Sets fields directly: each one overrides what an earlier plugin set for that field.
+    Sets,
+    /// Preceded by `overwrite`: wipes the object first, so everything earlier is lost.
+    Overwrites,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -44,6 +51,9 @@ pub struct Definition {
     /// The object's name. For a ship variant (`ship "Falcon" "Falcon Mk2"`) both names, joined.
     pub name: String,
     pub mode: Mode,
+    /// The fields this definition touches: its child keys, and for `add` / `remove` lines the
+    /// field they target (`add outfits ...` touches `outfits`).
+    pub fields: BTreeSet<String>,
 }
 
 /// `Default` (format 0, empty) is what a missing cache file loads as; it never matches the real
@@ -73,24 +83,35 @@ pub enum OverlapError {
 // Reading one plugin
 // ---------------------------------------------------------------------------
 
-/// Node types that are bookkeeping, not objects that can be replaced.
+/// Node types that are bookkeeping, not objects that can be overridden.
 const IGNORED_KINDS: &[&str] = &["disable", "overwrite"];
 
-/// Whether a top-level node only layers changes onto an object (`add` / `remove` lines).
-fn classify(node: &Node, marked_overwrite: bool) -> Mode {
-    if marked_overwrite {
-        return Mode::Replaces;
+/// The mode and touched fields of one top-level node.
+fn classify(node: &Node, marked_overwrite: bool) -> (Mode, BTreeSet<String>) {
+    let mut fields = BTreeSet::new();
+    let mut sets_directly = false;
+    for child in &node.children {
+        match child.key() {
+            // `add outfits ...` / `remove outfits ...` touch the `outfits` field.
+            "add" | "remove" => {
+                if let Some(target) = child.token(1) {
+                    fields.insert(target.to_string());
+                }
+            }
+            key => {
+                sets_directly = true;
+                fields.insert(key.to_string());
+            }
+        }
     }
-    let only_layering = !node.children.is_empty()
-        && node
-            .children
-            .iter()
-            .all(|c| matches!(c.key(), "add" | "remove"));
-    if only_layering {
-        Mode::Extends
+    let mode = if marked_overwrite {
+        Mode::Overwrites
+    } else if sets_directly {
+        Mode::Sets
     } else {
-        Mode::Replaces
-    }
+        Mode::Extends
+    };
+    (mode, fields)
 }
 
 /// The definitions in one data file's text.
@@ -100,7 +121,7 @@ pub fn definitions_in(text: &str) -> BTreeSet<Definition> {
     for node in datanode::parse(text) {
         let kind = node.key();
         if kind == "overwrite" {
-            // A marker on its own line: the next node replaces whatever was there.
+            // A marker on its own line: the next node wipes whatever was there first.
             overwrite_next = true;
             continue;
         }
@@ -109,10 +130,12 @@ pub fn definitions_in(text: &str) -> BTreeSet<Definition> {
             continue;
         }
         let name = node.tokens[1..node.tokens.len().min(3)].join(" / ");
+        let (mode, fields) = classify(&node, marked);
         found.insert(Definition {
             kind: kind.to_string(),
             name,
-            mode: classify(&node, marked),
+            mode,
+            fields,
         });
     }
     found
@@ -298,33 +321,54 @@ pub enum OverlapItem {
     Sound(String),
 }
 
-/// Something one plugin replaces from others. `winner` loads last, so its version is the
-/// one the game uses; `overridden` lists the earlier plugins whose version is lost.
+/// Something one plugin overrides from others. `winner` loads last, so its values are the
+/// ones the game uses; `overridden` lists the earlier plugins whose values are lost. For an
+/// object, `fields` names what both touched (empty for `overwrite`, which wipes everything).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Overlap {
     pub item: OverlapItem,
     pub winner: String,
     pub overridden: Vec<String>,
+    pub fields: Vec<String>,
 }
 
-/// The overlaps among `plugins`, in the game's load order (sorted by folder name). Objects are
-/// reported only when a full definition comes *after* another plugin's definition of the same
-/// thing (what an earlier plugin did is lost). A plugin that only `add`s / `remove`s, or that
-/// loads after the full definition, layers on top and is fine. Image and sound names shared by
-/// two plugins are reported with the later one winning.
+/// One plugin's combined view of an object (it may define it in several files).
+struct Merged<'a> {
+    folder: &'a str,
+    mode: Mode,
+    fields: BTreeSet<&'a str>,
+}
+
+/// The overlaps among `plugins`, in the game's load order (sorted by folder name).
+///
+/// An object overlaps when a later plugin *sets* a field (or `overwrite`s the whole object)
+/// that an earlier plugin touched: the earlier plugin's value is lost. A later plugin that
+/// only `add`s / `remove`s layers on top and is fine, and so are plugins touching different
+/// fields. Image and sound names shared by two plugins are reported with the later one winning.
 pub fn find_overlaps(plugins: &[PluginEntry]) -> Vec<Overlap> {
     let mut ordered: Vec<&PluginEntry> = plugins.iter().collect();
     ordered.sort_by(|a, b| a.folder.cmp(b.folder));
 
-    let mut objects: BTreeMap<(&str, &str), Vec<(&str, Mode)>> = BTreeMap::new();
+    let mut objects: BTreeMap<(&str, &str), Vec<Merged>> = BTreeMap::new();
     let mut images: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     let mut sounds: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for p in &ordered {
         for d in &p.index.definitions {
-            objects
+            let list = objects
                 .entry((d.kind.as_str(), d.name.as_str()))
-                .or_default()
-                .push((p.folder, d.mode));
+                .or_default();
+            // Same plugin, same object, more than one file: treat as one combined definition.
+            match list.last_mut().filter(|m| m.folder == p.folder) {
+                Some(m) => {
+                    m.mode = m.mode.max(d.mode);
+                    m.fields.extend(d.fields.iter().map(String::as_str));
+                }
+                None => list.push(Merged {
+                    folder: p.folder,
+                    mode: d.mode,
+                    fields: d.fields.iter().map(String::as_str).collect(),
+                }),
+            }
         }
         for i in &p.index.images {
             images.entry(i.as_str()).or_default().push(p.folder);
@@ -336,27 +380,39 @@ pub fn find_overlaps(plugins: &[PluginEntry]) -> Vec<Overlap> {
 
     let mut found = Vec::new();
     for ((kind, name), defs) in objects {
-        // The last full definition decides the object; anything before it from another
-        // plugin has been replaced.
-        let Some(last) = defs.iter().rposition(|(_, m)| *m == Mode::Replaces) else {
-            continue;
-        };
-        let winner = defs[last].0;
-        let mut overridden: Vec<String> = defs[..last]
-            .iter()
-            .map(|(f, _)| (*f).to_string())
-            .filter(|f| f != winner)
-            .collect();
-        overridden.dedup();
-        if !overridden.is_empty() {
-            found.push(Overlap {
-                item: OverlapItem::Object {
-                    kind: kind.to_string(),
-                    name: name.to_string(),
-                },
-                winner: winner.to_string(),
-                overridden,
-            });
+        let mut winner: Option<&str> = None;
+        let mut overridden: BTreeSet<&str> = BTreeSet::new();
+        let mut shared: BTreeSet<&str> = BTreeSet::new();
+        for (j, later) in defs.iter().enumerate() {
+            if later.mode == Mode::Extends {
+                continue; // only layers on top, never overrides a value
+            }
+            for earlier in &defs[..j] {
+                let hit: BTreeSet<&str> = later
+                    .fields
+                    .intersection(&earlier.fields)
+                    .copied()
+                    .collect();
+                if later.mode == Mode::Overwrites || !hit.is_empty() {
+                    winner = Some(later.folder);
+                    overridden.insert(earlier.folder);
+                    shared.extend(hit);
+                }
+            }
+        }
+        if let Some(winner) = winner {
+            overridden.remove(winner);
+            if !overridden.is_empty() {
+                found.push(Overlap {
+                    item: OverlapItem::Object {
+                        kind: kind.to_string(),
+                        name: name.to_string(),
+                    },
+                    winner: winner.to_string(),
+                    overridden: overridden.iter().map(|s| s.to_string()).collect(),
+                    fields: shared.iter().map(|s| s.to_string()).collect(),
+                });
+            }
         }
     }
     for (map, make) in [
@@ -375,6 +431,7 @@ pub fn find_overlaps(plugins: &[PluginEntry]) -> Vec<Overlap> {
                         .iter()
                         .map(|s| s.to_string())
                         .collect(),
+                    fields: Vec::new(),
                 });
             }
         }
@@ -387,11 +444,12 @@ pub fn find_overlaps(plugins: &[PluginEntry]) -> Vec<Overlap> {
 mod tests {
     use super::*;
 
-    fn def(kind: &str, name: &str, mode: Mode) -> Definition {
+    fn def(kind: &str, name: &str, mode: Mode, fields: &[&str]) -> Definition {
         Definition {
             kind: kind.into(),
             name: name.into(),
             mode,
+            fields: fields.iter().map(|s| s.to_string()).collect(),
         }
     }
 
@@ -405,8 +463,14 @@ mod tests {
         }
     }
 
+    fn entries<'a>(list: &'a [(&'a str, &'a PluginIndex)]) -> Vec<PluginEntry<'a>> {
+        list.iter()
+            .map(|(folder, index)| PluginEntry { folder, index })
+            .collect()
+    }
+
     #[test]
-    fn add_and_remove_only_definitions_extend_everything_else_replaces() {
+    fn definitions_record_their_mode_and_the_fields_they_touch() {
         let text = "\
 system \"1 Axis\"
 \tremove minables lead
@@ -427,16 +491,21 @@ disable mission \"Old\"
 start
 ";
         let defs = definitions_in(text);
-        assert!(defs.contains(&def("system", "1 Axis", Mode::Extends)));
+        assert!(defs.contains(&def("system", "1 Axis", Mode::Extends, &["minables"])));
         assert!(
-            defs.contains(&def("system", "2 Axis", Mode::Replaces)),
-            "a real field alongside `add` is a full definition"
+            defs.contains(&def("system", "2 Axis", Mode::Sets, &["fleet", "pos"])),
+            "a field set directly makes it Sets; `add fleet` still touches `fleet`"
         );
-        assert!(defs.contains(&def("ship", "Hornet", Mode::Replaces)));
-        assert!(defs.contains(&def("ship", "Falcon / Falcon Mk2", Mode::Replaces)));
+        assert!(defs.contains(&def(
+            "ship",
+            "Hornet",
+            Mode::Sets,
+            &["attributes", "sprite"]
+        )));
+        assert!(defs.contains(&def("ship", "Falcon / Falcon Mk2", Mode::Sets, &["sprite"])));
         assert!(
-            defs.contains(&def("outfit", "Thing", Mode::Replaces)),
-            "`overwrite` on the line before forces a replace"
+            defs.contains(&def("outfit", "Thing", Mode::Overwrites, &["attributes"])),
+            "`overwrite` on the line before wipes the object first"
         );
         assert!(
             !defs
@@ -491,8 +560,8 @@ start
         assert_eq!(
             idx.definitions.iter().cloned().collect::<Vec<_>>(),
             [
-                def("ship", "A", Mode::Replaces),
-                def("system", "S", Mode::Extends)
+                def("ship", "A", Mode::Sets, &["sprite"]),
+                def("system", "S", Mode::Extends, &["fleet"])
             ]
         );
         assert_eq!(
@@ -500,6 +569,21 @@ start
             ["ship/a", "ship/a@2x"]
         );
         assert_eq!(idx.sounds.iter().cloned().collect::<Vec<_>>(), ["boom"]);
+    }
+
+    #[test]
+    fn large_data_files_are_read_in_full() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("data")).unwrap();
+        // ~6 MB of filler, then a definition at the very end: it must still be found.
+        let mut text = "# padding\n".repeat(600_000);
+        text.push_str("ship \"Late\"\n\tsprite x\n");
+        fs::write(dir.path().join("data/big.txt"), text).unwrap();
+        let idx = index_plugin(dir.path()).unwrap();
+        assert!(
+            idx.definitions
+                .contains(&def("ship", "Late", Mode::Sets, &["sprite"]))
+        );
     }
 
     #[test]
@@ -517,7 +601,7 @@ start
         let mut marked = first.clone();
         marked
             .definitions
-            .insert(def("ship", "FromCache", Mode::Replaces));
+            .insert(def("ship", "FromCache", Mode::Sets, &["sprite"]));
         files::save_json::<_, OverlapError>(&cache, &marked).unwrap();
         assert_eq!(load_or_index(&plugin, &cache).unwrap(), marked);
 
@@ -527,12 +611,12 @@ start
         assert!(
             !again
                 .definitions
-                .contains(&def("ship", "FromCache", Mode::Replaces))
+                .contains(&def("ship", "FromCache", Mode::Sets, &["sprite"]))
         );
         assert!(
             again
                 .definitions
-                .contains(&def("outfit", "B", Mode::Replaces))
+                .contains(&def("outfit", "B", Mode::Sets, &["cost"]))
         );
 
         // A corrupt cache is a miss, never an error.
@@ -541,22 +625,27 @@ start
     }
 
     #[test]
-    fn a_later_full_definition_overrides_an_earlier_one() {
-        // Real case: Cromha Expansion and Factory.Outlets both define ship "Hornet".
-        let a = index(&[def("ship", "Hornet", Mode::Replaces)], &[]);
-        let b = index(&[def("ship", "Hornet", Mode::Replaces)], &[]);
-        let overlaps = find_overlaps(&[
-            PluginEntry {
-                folder: "Factory.Outlets",
-                index: &b,
-            },
-            PluginEntry {
-                folder: "Cromha Expansion Plugin",
-                index: &a,
-            },
-        ]);
+    fn a_later_plugin_setting_the_same_field_overrides_an_earlier_one() {
+        // Real case: Cromha Expansion and Factory.Outlets both set fields of ship "Hornet".
+        let cromha = index(
+            &[def("ship", "Hornet", Mode::Sets, &["sprite", "attributes"])],
+            &[],
+        );
+        let outlets = index(
+            &[def(
+                "ship",
+                "Hornet",
+                Mode::Sets,
+                &["attributes", "outfits"],
+            )],
+            &[],
+        );
+        let list = [
+            ("Factory.Outlets", &outlets),
+            ("Cromha Expansion Plugin", &cromha),
+        ];
         assert_eq!(
-            overlaps,
+            find_overlaps(&entries(&list)),
             [Overlap {
                 item: OverlapItem::Object {
                     kind: "ship".into(),
@@ -564,61 +653,60 @@ start
                 },
                 winner: "Factory.Outlets".into(),
                 overridden: vec!["Cromha Expansion Plugin".into()],
-            }]
+                fields: vec!["attributes".into()],
+            }],
+            "only the field both set is reported"
         );
     }
 
     #[test]
-    fn layering_is_not_an_overlap_unless_a_replace_comes_after_it() {
-        let ext = |n: &str| index(&[def("system", n, Mode::Extends)], &[]);
-        let rep = |n: &str| index(&[def("system", n, Mode::Replaces)], &[]);
+    fn different_fields_or_layering_are_not_overlaps() {
+        let sets = |f: &[&str]| index(&[def("planet", "Luna", Mode::Sets, f)], &[]);
+        let ext = |f: &[&str]| index(&[def("planet", "Luna", Mode::Extends, f)], &[]);
 
-        // Two plugins that only add to the same system: no overlap at all.
-        let (a, b) = (ext("1 Axis"), ext("1 Axis"));
-        assert!(
-            find_overlaps(&[
-                PluginEntry {
-                    folder: "bits",
-                    index: &a
-                },
-                PluginEntry {
-                    folder: "fauna",
-                    index: &b
-                },
-            ])
-            .is_empty()
-        );
+        // Two plugins setting different fields of the same planet.
+        let (a, b) = (sets(&["landscape"]), sets(&["description"]));
+        assert!(find_overlaps(&entries(&[("a", &a), ("b", &b)])).is_empty());
 
-        // An extension loading AFTER the full definition layers on top: fine.
-        let (base, extra) = (rep("X"), ext("X"));
-        assert!(
-            find_overlaps(&[
-                PluginEntry {
-                    folder: "a-base",
-                    index: &base
-                },
-                PluginEntry {
-                    folder: "b-extra",
-                    index: &extra
-                },
-            ])
-            .is_empty()
-        );
+        // Two plugins that only add to the same list.
+        let (a, b) = (ext(&["outfitter"]), ext(&["outfitter"]));
+        assert!(find_overlaps(&entries(&[("a", &a), ("b", &b)])).is_empty());
 
-        // But an extension loading BEFORE a full definition is wiped out by it.
-        let overlaps = find_overlaps(&[
-            PluginEntry {
-                folder: "a-extra",
-                index: &extra,
-            },
-            PluginEntry {
-                folder: "b-base",
-                index: &base,
-            },
-        ]);
+        // An extension after a plain definition of the same field layers on top.
+        let (base, extra) = (sets(&["outfitter"]), ext(&["outfitter"]));
+        assert!(find_overlaps(&entries(&[("a", &base), ("b", &extra)])).is_empty());
+
+        // But an extension BEFORE a later plugin that sets that field is overridden by it.
+        let overlaps = find_overlaps(&entries(&[("a", &extra), ("b", &base)]));
         assert_eq!(overlaps.len(), 1);
-        assert_eq!(overlaps[0].winner, "b-base");
-        assert_eq!(overlaps[0].overridden, ["a-extra"]);
+        assert_eq!(overlaps[0].winner, "b");
+        assert_eq!(overlaps[0].overridden, ["a"]);
+        assert_eq!(overlaps[0].fields, ["outfitter"]);
+    }
+
+    #[test]
+    fn overwrite_wipes_everything_earlier_whatever_fields_it_sets() {
+        let early = index(&[def("fleet", "Pirates", Mode::Sets, &["variant"])], &[]);
+        let wipe = index(
+            &[def("fleet", "Pirates", Mode::Overwrites, &["government"])],
+            &[],
+        );
+        let overlaps = find_overlaps(&entries(&[("a", &early), ("b", &wipe)]));
+        assert_eq!(overlaps.len(), 1);
+        assert_eq!(overlaps[0].winner, "b");
+        assert!(overlaps[0].fields.is_empty());
+    }
+
+    #[test]
+    fn one_plugin_defining_an_object_in_two_files_is_not_an_overlap_with_itself() {
+        let one = index(
+            &[
+                def("ship", "A", Mode::Sets, &["sprite"]),
+                def("ship", "A", Mode::Extends, &["sprite"]),
+            ],
+            &[],
+        );
+        assert!(find_overlaps(&entries(&[("only", &one)])).is_empty());
     }
 
     #[test]
@@ -627,30 +715,12 @@ start
         let sharper = index(&[], &["land/aera@2x"]);
         let also_sharper = index(&[], &["land/aera@2x", "land/other@2x"]);
         // A high-resolution pack supplying `@2x` art for another plugin's normal art is by design.
-        assert!(
-            find_overlaps(&[
-                PluginEntry {
-                    folder: "base",
-                    index: &normal
-                },
-                PluginEntry {
-                    folder: "highdpi",
-                    index: &sharper
-                },
-            ])
-            .is_empty()
-        );
+        assert!(find_overlaps(&entries(&[("base", &normal), ("highdpi", &sharper)])).is_empty());
         // Two plugins both supplying the same `@2x` art really do compete.
-        let overlaps = find_overlaps(&[
-            PluginEntry {
-                folder: "High DPI",
-                index: &sharper,
-            },
-            PluginEntry {
-                folder: "landing.images.highres",
-                index: &also_sharper,
-            },
-        ]);
+        let overlaps = find_overlaps(&entries(&[
+            ("High DPI", &sharper),
+            ("landing.images.highres", &also_sharper),
+        ]));
         assert_eq!(overlaps.len(), 1);
         assert_eq!(overlaps[0].item, OverlapItem::Image("land/aera@2x".into()));
         assert_eq!(overlaps[0].winner, "landing.images.highres");
