@@ -13,6 +13,8 @@ export function ProfilesView({ manager, planFlow, notify }: { manager: Manager; 
   const [renameValue, setRenameValue] = useState("");
   if (!state?.install) return <p className="empty muted">Select a game install in Settings first.</p>;
   const { profiles } = state;
+  // The active profile only needs applying when the live plugin list has drifted from it.
+  const hasDrifted = profiles.drift.enabledButNotInProfile.length > 0 || profiles.drift.inProfileButDisabled.length > 0;
 
   const create = async () => {
     try {
@@ -134,17 +136,19 @@ export function ProfilesView({ manager, planFlow, notify }: { manager: Manager; 
               </div>
               {!isRenaming && (
                 <div className="row-actions">
-                  <button
-                    className={active ? "small" : "primary small"}
-                    title={
-                      active
-                        ? "Turn plugins on and off so they match this profile exactly again, undoing changes made outside the manager"
-                        : "Make this the active profile: plugins are turned on and off to match it"
-                    }
-                    onClick={() => void planFlow.start({ kind: "applyProfile", name: p.name })}
-                  >
-                    {active ? "Restore" : "Switch"}
-                  </button>
+                  {(!active || hasDrifted) && (
+                    <button
+                      className={active ? "small" : "primary small"}
+                      title={
+                        active
+                          ? "Plugins were changed outside the manager: turn them on and off to match this profile again"
+                          : "Make this the active profile: plugins are turned on and off to match it"
+                      }
+                      onClick={() => void planFlow.start({ kind: "applyProfile", name: p.name })}
+                    >
+                      {active ? "Apply Profile" : "Switch"}
+                    </button>
+                  )}
                   <button className="small" onClick={() => startRename(p.name)}>
                     Rename
                   </button>
