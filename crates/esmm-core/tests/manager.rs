@@ -896,6 +896,7 @@ fn update_replaces_the_folder_the_plugin_is_in_whatever_it_is_called() {
             source_url: "https://example.com/A-Cat.zip".into(),
             sha256: String::new(),
             original_folder: None,
+            added_name: None,
         },
     );
     records::save(&world.records_path, &records).unwrap();
@@ -924,6 +925,7 @@ fn adopt(world: &World, folder: &str, identity: &str, catalog_name: &str) {
             source_url: format!("https://example.com/{catalog_name}.zip"),
             sha256: String::new(),
             original_folder: None,
+            added_name: None,
         },
     );
     records::save(&world.records_path, &records).unwrap();
@@ -1015,6 +1017,7 @@ fn a_fresh_install_does_not_inherit_a_leftover_records_original_folder() {
             source_url: "https://example.com/x.zip".into(),
             sha256: "ab".into(),
             original_folder: Some("Zzz".into()),
+            added_name: None,
         },
     );
     records::save(&world.records_path, &records).unwrap();

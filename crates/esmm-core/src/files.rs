@@ -2,9 +2,22 @@
 
 use std::io::{self, Write};
 use std::path::Path;
+use std::sync::{Mutex, MutexGuard};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+
+/// One lock for the whole process around changes the manager makes to plugin folders outside a
+/// normal install/update/uninstall: renaming folders for the load order (`load_order`) and
+/// writing a name into a plugin's `plugin.txt` (`plugin_naming`), plus finishing or undoing an
+/// interrupted run of either. Holding it means none of those can happen halfway through another.
+/// (It does not guard against a second copy of the manager running at the same time.)
+pub(crate) fn plugin_folders_lock() -> MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    // A panic while holding it can't leave anything half-written that the journals don't
+    // already cover, so keep going rather than refusing every later change.
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// Write via a temp file in the same directory, then rename over `path`.
 pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {

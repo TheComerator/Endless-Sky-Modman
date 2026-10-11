@@ -13,8 +13,10 @@
 //!
 //! * **Identity.** A plugin's identity is the `name` in its `plugin.txt`, else its folder name.
 //!   Renaming a folder only keeps the identity if `plugin.txt` names the plugin, so a plugin
-//!   without a name is never renamed ([`ExcludeReason::NoPluginName`]). Nothing is ever written
-//!   inside a plugin folder.
+//!   without a name is never renamed ([`ExcludeReason::NoPluginName`]). This module never
+//!   writes inside a plugin folder. The page can offer such a plugin a name instead (the user
+//!   picks its folder name or types one); that separate step, `crate::plugin_naming`, adds one
+//!   `name` line to its `plugin.txt`, after which it is ordered like any other plugin.
 //! * **Only plugins the manager has a record for** are renamed: ones it installed, and ones put in
 //!   `plugins/` by hand that it linked to the catalog (adopted), since a record is where the
 //!   original folder name is remembered so a restore is possible. A plugin it knows nothing about
@@ -35,18 +37,37 @@
 //! it), so removing the feature means deleting the files below and the one-line registrations
 //! listed after them. Run "Restore original names" first if any plugin is still renamed.
 //!
+//! **First, plugins that were given a name.** The "give it a name" step (`plugin_naming`)
+//! writes a `name` line into a plugin's `plugin.txt` and records it as `added_name` in
+//! `records.json`; every update writes it back. If any record in that file has an `added_name`,
+//! keep `crates/esmm-core/src/plugin_naming.rs`, its line in `lib.rs`, its two hooks in
+//! `manager.rs` (`expect_added_name` and `put_back_added_names`, with their calls) and the
+//! `recover_interrupted_naming` call in `app/src-tauri/src/shell.rs`, and do not remove the
+//! `crate::files::plugin_folders_lock` function; otherwise those plugins would silently lose
+//! their name (and so their on/off setting and profile entries) at their next update. They work
+//! without everything else listed here. (The names stay in the plugins' `plugin.txt` files;
+//! copies of the files as they were are in `plugin-txt-backups/` beside `records.json`.)
+//!
 //! Files to delete:
 //! * `crates/esmm-core/src/load_order.rs` (this file) and `crates/esmm-core/tests/load_order.rs`
+//! * `crates/esmm-core/src/plugin_naming.rs` and `crates/esmm-core/tests/plugin_naming.rs`
+//!   (only if no record has an `added_name`, see above)
 //! * `app/src-tauri/src/shell/load_order.rs` and `app/src-tauri/src/load_order_views.rs`
 //! * `app/src/views/LoadOrderView.tsx`, `app/src/hooks/useLoadOrder.ts`, `app/src/loadOrder.ts`
 //!   and `app/src/loadOrder.test.ts`
 //! * `app/src/bindings/LoadOrder*.ts` (generated; `cargo test` no longer writes them)
 //!
 //! Lines to remove (most are marked `load order` or `load_order` where they appear):
-//! * `crates/esmm-core/src/lib.rs`: `pub mod load_order;`
+//! * `crates/esmm-core/src/lib.rs`: `pub mod load_order;` (and `pub mod plugin_naming;`, if
+//!   it goes)
+//! * `crates/esmm-core/src/manager.rs`, only if `plugin_naming.rs` goes: the
+//!   `use crate::plugin_naming;` line, `expect_added_name` and `put_back_added_names` /
+//!   `put_back_added_name` / `load_records` with every call to them, and the `added_name` field
+//!   of `StagedPlugin` (records then get `added_name: None`)
 //! * `app/src-tauri/src/lib.rs`: `mod load_order_views;` and the `commands::load_order_*` entries
 //! * `app/src-tauri/src/shell.rs`: the `// load order` comment and `mod load_order;`, and the
-//!   `recover_interrupted` call (with its comment) in `snapshot`
+//!   `recover_interrupted` call (with its comment) in `snapshot`; also the
+//!   `recover_interrupted_naming` call and function, only if `plugin_naming.rs` goes
 //! * `app/src-tauri/src/commands.rs`: the `use crate::load_order_views::*;` line and the "Load
 //!   order" block of command wrappers at the end of the file
 //! * `app/src-tauri/src/settings.rs`: the `manage_load_order` field, the test
@@ -64,15 +85,18 @@
 //! Then run `cargo fmt` (deleting the lines above leaves a stray blank line in `shell.rs`) and
 //! delete the empty `app/src-tauri/src/shell/` folder. This was checked in a throwaway copy:
 //! with exactly these steps `cargo fmt --check`, `cargo clippy --all-targets`,
-//! `cargo test --workspace`, `npm run build` and `npm test` all pass.
+//! `cargo test --workspace`, `npm run build` and `npm test` all pass. (Checked before the
+//! "give it a name" step was added; the lines added for it above have not been re-checked
+//! that way.)
 //!
 //! Documentation is not code and nothing breaks if it stays, but if the feature is removed for
 //! good, also deal with decision M and roadmap item 1d in `CLAUDE.md`, the README bullets,
 //! `docs/proposals/endless-sky-load-order-request.md` and
 //! `project-memory/prompts/load-order-cloud-session.md`.
 //!
-//! The generic `original_folder` field on `InstallRecord` and the "update in place" rule in
-//! `manager::plan_update` are harmless without the feature and can stay.
+//! The generic `original_folder` and `added_name` fields on `InstallRecord`, the shared
+//! `files::plugin_folders_lock` and the "update in place" rule in `manager::plan_update` are
+//! harmless without the feature and can stay.
 //!
 //! A future native mechanism in the game would be another implementation of
 //! [`LoadOrderBackend`]; callers do not need to change.
@@ -82,7 +106,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::MutexGuard;
 
 use serde::{Deserialize, Serialize};
 
@@ -118,7 +142,7 @@ pub enum LoadOrderError {
     #[error("Endless Sky is running; close it first")]
     GameRunning,
     #[error(
-        "An earlier reordering was interrupted and is still being tidied up. The manager finishes or undoes it by itself the next time it reads your plugins; try again in a moment."
+        "An earlier change to the plugin folders was interrupted and is still being tidied up. The manager finishes or undoes it by itself the next time it reads your plugins; try again in a moment."
     )]
     JournalPending,
     #[error("The plugin list changed since this order was made. Reload the Load order page.")]
@@ -1071,11 +1095,21 @@ fn finish_journal(path: &Path) -> Result<(), LoadOrderError> {
 }
 
 /// One commit or recovery at a time, in the whole process: a recovery must never replay a
-/// journal that a live commit is still working through.
-static RUN_LOCK: Mutex<()> = Mutex::new(());
-
+/// journal that a live commit is still working through. It is the same lock the "give it a
+/// name" step (`plugin_naming`) takes, so a name is never written halfway through a rename.
 fn run_lock() -> MutexGuard<'static, ()> {
-    RUN_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    files::plugin_folders_lock()
+}
+
+/// True while either feature's journal says a run is unfinished: the load order's own, or an
+/// interrupted "give it a name" step (`plugin_naming`), which recovery finishes first.
+fn journal_pending(paths: &Paths) -> bool {
+    exists(&paths.journal_path())
+        || exists(
+            &paths
+                .records_path
+                .with_file_name(crate::plugin_naming::JOURNAL_FILE),
+        )
 }
 
 /// The record to keep when both names have one: the one that is this plugin's own (same
@@ -1165,7 +1199,7 @@ fn commit_with(
     }
     let _lock = run_lock();
     let journal_path = paths.journal_path();
-    if exists(&journal_path) {
+    if journal_pending(paths) {
         return Err(LoadOrderError::JournalPending);
     }
     let plugins = paths.plugins_dir();
@@ -1397,6 +1431,7 @@ mod tests {
                     source_url: "https://example.com/x.zip".into(),
                     sha256: sha256.to_string(),
                     original_folder: original.map(str::to_string),
+                    added_name: None,
                 },
             );
             records::save(&self.records_path, &records).unwrap();
@@ -2092,6 +2127,21 @@ mod tests {
             .commit(&w.paths(), &plan, GameProcess::NotRunning)
             .unwrap_err();
         assert!(matches!(err, LoadOrderError::JournalPending));
+
+        // So does an unfinished "give it a name" step: it must be finished before any folder
+        // moves, or it could no longer find the plugin it was naming.
+        fs::remove_file(w.paths().journal_path()).unwrap();
+        let naming = w
+            .records_path
+            .with_file_name(crate::plugin_naming::JOURNAL_FILE);
+        fs::write(&naming, "{}").unwrap();
+        let err = backend()
+            .commit(&w.paths(), &plan, GameProcess::NotRunning)
+            .unwrap_err();
+        assert!(matches!(err, LoadOrderError::JournalPending));
+        assert_eq!(w.folders(), ["Alpha"]);
+        // And the naming step looks for this module's journal under the same name.
+        assert_eq!(crate::plugin_naming::LOAD_ORDER_JOURNAL_FILE, JOURNAL_FILE);
     }
 
     // --- recovery ------------------------------------------------------------
