@@ -463,3 +463,31 @@ fn a_typed_name_carries_profiles_and_a_disabled_state_through_an_update() {
     assert!(profile.enabled.contains_key("Foo Expanded"));
     assert!(!profile.enabled.contains_key("Foo"));
 }
+
+#[test]
+fn a_plugin_that_requires_the_old_name_is_reported_not_quietly_satisfied() {
+    // Foo was given another name; Dep still requires "Foo". The catalog entry "Foo" is the very
+    // plugin that was renamed, so installing Dep must not treat reinstalling it as a fix.
+    let mut w = world_with_foo();
+    w.name("Foo", NameChoice::Typed("Foo Deluxe".into()));
+    w.publish(
+        "Dep",
+        "1",
+        Some("name \"Dep\"\ndependencies\n\trequires\n\t\tFoo\n"),
+    );
+    let dep = w.catalog.iter().find(|e| e.name == "Dep").unwrap().clone();
+    let plan = w.with_ctx(|ctx| manager::plan_install(&dep, ctx));
+    assert!(
+        plan.issues.contains(&Issue::IdentityMismatch {
+            expected: "Foo".into(),
+            catalog_name: "Foo".into(),
+            actual: "Foo Deluxe".into(),
+        }),
+        "{:?}",
+        plan.issues
+    );
+    // If the user installs anyway, the reinstalled Foo keeps the name they gave it.
+    manager::commit(plan, &w.commit_ctx(), true).unwrap();
+    assert_eq!(w.identity_of("Foo"), "Foo Deluxe");
+    assert_eq!(w.records()["Foo"].added_name.as_deref(), Some("Foo Deluxe"));
+}
