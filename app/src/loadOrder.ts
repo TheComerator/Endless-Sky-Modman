@@ -129,7 +129,8 @@ export function describeNameConsequences(plan: LoadOrderNamePlanView): string[] 
   ];
   if (plan.profiles.length > 0) {
     const n = plan.profiles.length;
-    lines.push(`${n === 1 ? "The profile" : `The ${n} profiles`} that include it switch to the new name: ${plan.profiles.join(", ")}.`);
+    const which = n === 1 ? "The profile that includes it switches" : `The ${n} profiles that include it switch`;
+    lines.push(`${which} to the new name: ${plan.profiles.join(", ")}.`);
   }
   lines.push("The manager's own record of it is updated too.");
   return lines;

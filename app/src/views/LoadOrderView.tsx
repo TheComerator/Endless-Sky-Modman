@@ -351,7 +351,7 @@ function NameDialog({
           <section>
             <h3>This will add</h3>
             <pre className="name-line">{plan.line}</pre>
-            <p className="muted">{describeNameWrite(plan)}</p>
+            <p className="muted name-write">{describeNameWrite(plan)}</p>
           </section>
           <section>
             <h3>What else changes</h3>
@@ -403,9 +403,10 @@ function NameDialog({
       <div ref={dialogRef} tabIndex={-1} className="modal wide" role="dialog" aria-modal="true" aria-label={title}>
         <h2>{title}</h2>
         <p>
-          The game calls this plugin by its folder name, <span className="folder">{folder}</span>, because its plugin.txt
-          (the plugin&apos;s info file) has no name. To number its folder without the game seeing a different plugin, the
-          manager will add one line to its plugin.txt. Nothing else in the file changes.
+          The game calls this plugin by its folder name, <span className="folder">{folder}</span>, because it has no name
+          of its own: there is no name line in its plugin.txt (the plugin&apos;s info file). To number its folder without the
+          game seeing a different plugin, the manager will add one line, a name, to its plugin.txt. Nothing else in the
+          file changes.
         </p>
         <fieldset className="name-choices">
           <legend className="sr-only">Which name</legend>
@@ -460,7 +461,7 @@ function NameDialog({
             />
           )}
         </fieldset>
-        {choice === "folder" && folderPlan && <p className="muted">{describeNameWrite(folderPlan)}</p>}
+        {choice === "folder" && folderPlan && <p className="muted name-write">{describeNameWrite(folderPlan)}</p>}
         <p className="muted">After every update of this plugin the manager adds the line again, so it keeps its name.</p>
         {choice === "folder"
           ? footer(
