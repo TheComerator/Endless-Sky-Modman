@@ -178,7 +178,7 @@ fn stage_download(ctx: &PlanContext, entry: &CatalogEntry) -> Result<StagedPlugi
     };
     let folder = install::sanitize_folder_name(&entry.name);
     let identity = meta.identity(&folder).to_string();
-    let mut staged = StagedPlugin {
+    Ok(StagedPlugin {
         staging,
         root,
         folder,
@@ -189,9 +189,14 @@ fn stage_download(ctx: &PlanContext, entry: &CatalogEntry) -> Result<StagedPlugi
         source_url: entry.url.clone(),
         sha256: downloaded.sha256,
         added_name: None,
-    };
-    // Reinstalling into a folder whose record says the manager added a name (only reachable
-    // through a requirement; the shell refuses a plain install of an installed plugin).
+    })
+}
+
+/// [`stage_download`] for an install (not an update): if the copy will replace a folder whose
+/// record says the manager added a name, plan with that name. Only reachable through a
+/// requirement, since the shell refuses a plain install of a plugin that is already installed.
+fn stage_for_install(ctx: &PlanContext, entry: &CatalogEntry) -> Result<StagedPlugin, String> {
+    let mut staged = stage_download(ctx, entry)?;
     let record = ctx
         .records
         .get(&staged.folder)
@@ -322,9 +327,17 @@ impl<'ctx, 'a> PlanBuilder<'ctx, 'a> {
             return;
         }
         let catalog_name = found.name.clone();
-        match stage_download(self.ctx, &found) {
+        match stage_for_install(self.ctx, &found) {
             Ok(staged) => {
-                if is_likely && staged.identity != required_identity {
+                // Plugin naming: the catalog entry is a plugin the user gave another name, so
+                // it no longer answers to the name that is required; say so, as for a `Likely`
+                // match, rather than quietly reinstalling it as if that settled the requirement.
+                let renamed_by_user = self
+                    .ctx
+                    .records
+                    .get(&staged.folder)
+                    .is_some_and(|r| r.added_name.as_deref() == Some(staged.identity.as_str()));
+                if (is_likely || renamed_by_user) && staged.identity != required_identity {
                     self.issues.push(Issue::IdentityMismatch {
                         expected: required_identity.to_string(),
                         catalog_name,
@@ -341,7 +354,7 @@ impl<'ctx, 'a> PlanBuilder<'ctx, 'a> {
     }
 
     fn stage_and_walk(&mut self, entry: &CatalogEntry) {
-        match stage_download(self.ctx, entry) {
+        match stage_for_install(self.ctx, entry) {
             Ok(staged) => self.finish_staging(staged),
             Err(error) => self.issues.push(Issue::CatalogDownloadFailed {
                 catalog_name: entry.name.clone(),
