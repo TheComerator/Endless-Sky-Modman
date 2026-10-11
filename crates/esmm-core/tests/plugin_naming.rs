@@ -494,7 +494,10 @@ fn the_managers_own_commits_wait_while_a_naming_or_renaming_is_unfinished() {
         fs::write(&path, "{}").unwrap();
         let plan = w.with_ctx(|ctx| manager::plan_disable("Bar", ctx));
         let err = manager::commit_disable(plan, &w.commit_ctx(), false).unwrap_err();
-        assert!(matches!(err, CommitError::Unfinished), "{err}");
+        let CommitError::Unfinished(change) = &err else {
+            panic!("{err}");
+        };
+        assert_eq!(change.journal, path);
         assert_eq!(
             w.states().get("Bar"),
             Some(&true),

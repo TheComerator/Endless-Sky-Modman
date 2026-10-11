@@ -49,7 +49,10 @@
 //! **Case 1, remove the load order only** (the naming part's core keeps working for updates,
 //! without any page): delete list L.
 //! **Case 2, remove the naming part only** (keep the load order): delete lists N1 and N2.
-//! **Case 3, remove both:** delete lists L and N1 (N2 is inside L's files).
+//! **Case 3, remove both:** delete lists L and N1 (N2 is inside L's files), and also the
+//! `note_recovery` method in `app/src-tauri/src/shell.rs` (both of its callers are gone; the
+//! rest of the "unfinished change" message code there stays, since `manager::begin_change`
+//! still refuses while a journal exists).
 //!
 //! **List L, the load order and its page** (most lines are marked `load order` or
 //! `load_order` where they appear):
@@ -125,10 +128,12 @@
 //! Then run `cargo fmt` (deleting lines leaves stray blank lines), in cases 1 and 3 delete the
 //! empty `app/src-tauri/src/shell/` folder, and run `cargo test`, which rewrites the generated
 //! `app/src/bindings/IssueView.ts` (cases 2 and 3) and `LoadOrderExcludedView.ts` (case 2);
-//! keep those changes. Checked on 2026-10-11 in a throwaway copy, applying exactly these lists
-//! with a script: in each of the three cases `cargo fmt --check`, `cargo clippy --all-targets`
-//! (no warnings), `cargo test --workspace`, the TypeScript check, `vite build` and the frontend
-//! tests all passed.
+//! keep those changes. Checked on 2026-10-11 in a throwaway copy (at commit f234d6e), applying
+//! exactly these lists with a script: in each of the three cases `cargo fmt --check`,
+//! `cargo clippy --all-targets` (no warnings), `cargo test --workspace`, the TypeScript check,
+//! `vite build` and the frontend tests all passed. Not re-checked since: the later "unfinished
+//! change" message (`note_recovery` above, and the `unfinished` field of `LoadOrderState`,
+//! which goes with list L's files).
 //!
 //! Documentation is not code and nothing breaks if it stays, but if the feature is removed for
 //! good, also deal with decision M and roadmap item 1d in `CLAUDE.md`, the README bullets,

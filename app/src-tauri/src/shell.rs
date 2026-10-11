@@ -311,6 +311,10 @@ pub struct Shell {
     next_id: AtomicU32,
     /// Serializes everything that writes the manager's or the game's files.
     op_lock: Mutex<()>,
+    /// Journal path -> why the last attempt to finish that unfinished load-order renaming or
+    /// naming failed (not "the game is running", which is said separately), so the refusal
+    /// shown while it is unfinished can say what went wrong.
+    recovery_errors: Mutex<HashMap<PathBuf, String>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -338,6 +342,7 @@ impl Shell {
             planning: Mutex::new(None),
             next_id: AtomicU32::new(1),
             op_lock: Mutex::new(()),
+            recovery_errors: Mutex::new(HashMap::new()),
         }
     }
 
@@ -630,13 +635,55 @@ impl Shell {
             return;
         }
         let game = (self.deps.detect_game)();
+        let journal = paths.records.with_file_name(plugin_naming::JOURNAL_FILE);
         match plugin_naming::recover(&naming_paths(paths), game) {
-            Ok(plugin_naming::NamingRecovery::Nothing) => {}
-            Ok(done) => tracing::warn!(?done, "dealt with an interrupted plugin naming"),
+            Ok(done) => {
+                self.note_recovery(&journal, None);
+                if done != plugin_naming::NamingRecovery::Nothing {
+                    tracing::warn!(?done, "dealt with an interrupted plugin naming");
+                }
+            }
+            Err(plugin_naming::NamingError::GameRunning) => {}
             Err(e) => {
-                tracing::warn!(error = %e, "couldn't recover an interrupted plugin naming")
+                tracing::warn!(error = %e, "couldn't recover an interrupted plugin naming");
+                self.note_recovery(&journal, Some(e.to_string()));
             }
         }
+    }
+
+    /// Remembers why the last attempt to finish the unfinished change recorded in `journal`
+    /// failed (`None`: it didn't fail).
+    fn note_recovery(&self, journal: &Path, error: Option<String>) {
+        let mut errors = lock(&self.recovery_errors);
+        match error {
+            Some(error) => errors.insert(journal.to_path_buf(), error),
+            None => errors.remove(journal),
+        };
+    }
+
+    /// The refusal while a load-order renaming or a naming is unfinished for this install, in
+    /// plain words (see [`unfinished_message`]); `None` when nothing is unfinished.
+    pub(super) fn unfinished_refusal(&self, paths: &InstallPaths) -> Option<CmdError> {
+        let change = manager::unfinished_change(&paths.records)?;
+        let running = (self.deps.detect_game)() == GameProcess::Running;
+        let last_error = lock(&self.recovery_errors).get(&change.journal).cloned();
+        let message = unfinished_message(&change, running, last_error.as_deref());
+        Some(if running {
+            CmdError::GameRunning { message }
+        } else {
+            CmdError::invalid(message)
+        })
+    }
+
+    /// A commit error as the frontend gets it; the refusal for an unfinished change gets its
+    /// full explanation.
+    fn commit_error(&self, paths: &InstallPaths, e: manager::CommitError) -> CmdError {
+        if matches!(e, manager::CommitError::Unfinished(_))
+            && let Some(refusal) = self.unfinished_refusal(paths)
+        {
+            return refusal;
+        }
+        e.into()
     }
 
     /// Everything the main views show, read fresh. Also performs decision B's automatic
@@ -1169,17 +1216,15 @@ impl Shell {
             detect_game: self.deps.detect_game,
             ..CommitContext::new(&paths.config_dir, &paths.records, &paths.profiles)
         };
-        let report = match pending.plan {
-            PendingPlan::Install { plan, .. } => manager::commit(plan, &ctx, override_issues)?,
-            PendingPlan::Update { plan, .. } => {
-                manager::commit_update(plan, &ctx, override_issues)?
-            }
+        let result = match pending.plan {
+            PendingPlan::Install { plan, .. } => manager::commit(plan, &ctx, override_issues),
+            PendingPlan::Update { plan, .. } => manager::commit_update(plan, &ctx, override_issues),
             PendingPlan::UpdateAll { plans, .. } => {
-                manager::commit_update_all(plans, &ctx, override_issues)?
+                manager::commit_update_all(plans, &ctx, override_issues)
             }
-            PendingPlan::Enable(plan) => manager::commit_enable(plan, &ctx, override_issues)?,
-            PendingPlan::Disable(plan) => manager::commit_disable(plan, &ctx, override_issues)?,
-            PendingPlan::Uninstall(plan) => manager::commit_uninstall(plan, &ctx, override_issues)?,
+            PendingPlan::Enable(plan) => manager::commit_enable(plan, &ctx, override_issues),
+            PendingPlan::Disable(plan) => manager::commit_disable(plan, &ctx, override_issues),
+            PendingPlan::Uninstall(plan) => manager::commit_uninstall(plan, &ctx, override_issues),
             PendingPlan::ApplyProfile {
                 name,
                 states,
@@ -1187,6 +1232,7 @@ impl Shell {
                 ..
             } => return self.commit_profile(paths, &name, &states, &steps),
         };
+        let report = result.map_err(|e| self.commit_error(paths, e))?;
         Ok(CommitView::from(&report))
     }
 
@@ -1199,7 +1245,8 @@ impl Shell {
     ) -> CmdResult<CommitView> {
         // Same lock and refusal as the core's commits (an unfinished load-order renaming or
         // naming must be finished first).
-        let _guard = manager::begin_change(&paths.records)?;
+        let _guard =
+            manager::begin_change(&paths.records).map_err(|e| self.commit_error(paths, e))?;
         let game = (self.deps.detect_game)();
         let mut store = ProfileStore::load(&paths.profiles)?;
         store.set_active(name)?;
@@ -1308,6 +1355,38 @@ impl Shell {
                 .ok_or_else(|| CmdError::not_found(format!("No profile named {name:?}.")))
         })
     }
+}
+
+/// What the user is told while a load-order renaming or a naming is unfinished (the manager
+/// then makes no other change): what it is about, where the note is kept, why it is still
+/// there, and what they can do. Deleting the journal is offered only as a last resort, with its
+/// consequence.
+pub(crate) fn unfinished_message(
+    change: &manager::UnfinishedChange,
+    game_running: bool,
+    last_error: Option<&str>,
+) -> String {
+    let journal = change.journal.display();
+    let about = if change.folders.is_empty() {
+        "some plugin folders".to_string()
+    } else {
+        format!("these plugin folders: {}", change.folders.join(", "))
+    };
+    let mut text = format!(
+        "An earlier change to {about} (numbering their folders for the load order, or adding a plugin's name) isn't finished. The manager keeps a note of it in {journal} so it can finish or undo it safely, and it makes no other changes until then, so nothing is left half-done."
+    );
+    if game_running {
+        text.push_str(" Endless Sky is running: close it, and the manager finishes the change by itself the next time it reads your plugins.");
+    } else if let Some(error) = last_error {
+        text.push_str(&format!(
+            " Its last attempt to finish it failed: {error} It tries again every time it reads your plugins (for example when this window comes back to the front, or a page is opened). If it keeps failing, look at those plugin folders: if a folder still has a number in front of its name, use Load order, Restore original names; if a plugin's plugin.txt was changed or can't be read, check that file. Only as a last resort, delete {journal}: the manager then forgets the half-done change for good, and you may have to put those folders' names, or a plugin's name line, right by hand."
+        ));
+    } else {
+        text.push_str(
+            " It finishes it by itself the next time it reads your plugins; try again in a moment.",
+        );
+    }
+    text
 }
 
 /// Where the "give it a name" step (`plugin_naming`) finds things for one install.

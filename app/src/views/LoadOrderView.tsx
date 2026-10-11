@@ -634,6 +634,12 @@ export function LoadOrderView({ loadOrder, manager, notify }: { loadOrder: LoadO
         top of the list loads first; the bottom wins.
       </p>
 
+      {state.unfinished && (
+        <div className="banner warn unfinished-banner" role="alert">
+          {state.unfinished}
+        </div>
+      )}
+
       <div className="toolbar">
         <button onClick={() => void suggest()} title="Put plugins after the plugins they require, changing as little else as possible">
           Suggest order from dependencies

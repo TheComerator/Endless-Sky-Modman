@@ -19,7 +19,7 @@ use esmm_core::download::Downloaded;
 use esmm_core::game_install::GameInstall;
 use esmm_core::game_state::GameProcess;
 use esmm_core::install;
-use esmm_core::manager::{CommitError, CommitReport, Fetcher};
+use esmm_core::manager::{self, CommitError, CommitReport, Fetcher};
 use esmm_core::profiles::{Profile, ProfileStore};
 use esmm_core::records;
 use esmm_core::resolve::Issue;
@@ -1126,6 +1126,73 @@ fn a_profile_can_be_exported_and_imported_as_a_file() {
     let bad = w.dir.path().join("bad.json");
     std::fs::write(&bad, "not a profile").unwrap();
     assert_eq!(kind(&w.shell.import_profile(&bad).unwrap_err()), "invalid");
+}
+
+// ---------------------------------------------------------------------------
+// An unfinished load-order renaming or naming
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_change_that_cannot_be_finished_is_explained_with_its_reason_and_journal() {
+    let w = World::new();
+    w.add("A-Cat", "A", "1", PluginDeps::default());
+    w.install("A-Cat");
+    // A naming journal written by a newer version of the manager (say, before a downgrade):
+    // recovery can't use it, for a reason that has nothing to do with the game.
+    let journal = w
+        .paths()
+        .records
+        .with_file_name(manager::UNFINISHED_CHANGE_JOURNALS[1]);
+    fs::write(
+        &journal,
+        r#"{"format":2,"folder":"A-Cat","name":"A","old_identity":"A-Cat","new_entry_before":null}"#,
+    )
+    .unwrap();
+    w.state(); // reading the install tries to finish it, and fails
+
+    let ticket = w.shell.begin_planning();
+    let plan = w.shell.plan_disable(&ticket, "A").unwrap();
+    let err = w.shell.commit_plan(plan.plan_id, false).unwrap_err();
+    assert_eq!(kind(&err), "invalid");
+    let message = err.message();
+    assert!(message.contains("newer version"), "the reason: {message}");
+    assert!(
+        message.contains(&journal.display().to_string()),
+        "the journal: {message}"
+    );
+    assert!(message.contains("A-Cat"), "the folder: {message}");
+    assert!(message.contains("Restore original names"));
+    assert!(message.contains("last resort"));
+    assert!(
+        !message.contains("close it"),
+        "the game isn't running: {message}"
+    );
+    assert!(w.plugins_txt().contains("A 1"), "nothing was written");
+
+    // A profile switch is refused the same way.
+    let ticket = w.shell.begin_planning();
+    let plan = w.shell.plan_apply_profile(&ticket, "Default").unwrap();
+    let err = w.shell.commit_plan(plan.plan_id, true).unwrap_err();
+    assert!(err.message().contains("newer version"), "{err:?}");
+}
+
+#[test]
+fn while_the_game_runs_an_unfinished_change_says_to_close_it() {
+    let change = manager::UnfinishedChange {
+        journal: PathBuf::from("/data/load-order-journal.json"),
+        folders: vec!["010-Alpha".into(), "Alpha".into()],
+    };
+    let running = crate::shell::unfinished_message(&change, true, Some("old error"));
+    assert!(
+        running.contains("Endless Sky is running: close it"),
+        "{running}"
+    );
+    assert!(running.contains("010-Alpha, Alpha"));
+    assert!(running.contains("/data/load-order-journal.json"));
+    assert!(!running.contains("last resort"));
+    // Not running and no failure known yet: just try again in a moment.
+    let waiting = crate::shell::unfinished_message(&change, false, None);
+    assert!(!waiting.contains("close it") && waiting.contains("try again in a moment"));
 }
 
 // ---------------------------------------------------------------------------

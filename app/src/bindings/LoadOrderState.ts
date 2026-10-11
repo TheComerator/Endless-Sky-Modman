@@ -15,4 +15,9 @@ plugins: Array<LoadOrderPluginView>, excluded: Array<LoadOrderExcludedView>,
 /**
  * How many folders currently carry a prefix this feature added.
  */
-renamedCount: number, };
+renamedCount: number, 
+/**
+ * While an earlier renaming or naming is unfinished (nothing else can be changed until it
+ * is), what to tell the user: what it is, why, and what they can do. Shown as a banner.
+ */
+unfinished: string | null, };
