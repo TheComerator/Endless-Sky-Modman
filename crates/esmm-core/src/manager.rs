@@ -1107,10 +1107,13 @@ pub enum CommitError {
     },
     #[error("uninstall failed: {0}")]
     Uninstall(InstallError),
+    /// A load-order renaming or a naming isn't finished (see [`begin_change`]). The app turns
+    /// this into a fuller message (why, what to do) with what it knows about the last attempt.
     #[error(
-        "An earlier change to the plugin folders (a load-order renaming, or adding a plugin name) isn't finished yet. The manager finishes it by itself once Endless Sky is closed; try again then."
+        "An earlier change to the plugin folders (a load-order renaming, or adding a plugin name) isn't finished yet; the manager keeps a note of it in {}.",
+        .0.journal.display()
     )]
-    Unfinished,
+    Unfinished(UnfinishedChange),
     #[error("{0}")]
     Io(String),
 }
@@ -1218,17 +1221,62 @@ pub struct ChangeGuard {
 }
 
 /// Takes that lock, and refuses while a load-order renaming or a naming is unfinished (its
-/// recovery is waiting, usually for the game to close): a commit then would read and write
-/// `plugins.txt` and the records under a half-done change.
+/// recovery is waiting, for the game to close or because it failed): a commit then would read
+/// and write `plugins.txt` and the records under a half-done change.
 pub fn begin_change(records_path: &Path) -> Result<ChangeGuard, CommitError> {
     let lock = crate::files::plugin_folders_lock();
-    if UNFINISHED_CHANGE_JOURNALS
-        .iter()
-        .any(|journal| records_path.with_file_name(journal).exists())
-    {
-        return Err(CommitError::Unfinished);
+    if let Some(change) = unfinished_change(records_path) {
+        return Err(CommitError::Unfinished(change));
     }
     Ok(ChangeGuard { _lock: lock })
+}
+
+/// An unfinished load-order renaming or naming, as far as a message to the user needs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnfinishedChange {
+    /// The journal file that records it (beside `records.json`).
+    pub journal: PathBuf,
+    /// The plugin folders it is about (empty if the journal can't be read).
+    pub folders: Vec<String>,
+}
+
+/// The unfinished change for the install whose records are at `records_path`, if any. Reads the
+/// journal as plain JSON (its `folder`, `from` and `to` names), so it works whatever wrote it.
+pub fn unfinished_change(records_path: &Path) -> Option<UnfinishedChange> {
+    let journal = UNFINISHED_CHANGE_JOURNALS
+        .iter()
+        .map(|name| records_path.with_file_name(name))
+        .find(|path| path.exists())?;
+    let mut folders = std::collections::BTreeSet::new();
+    if let Some(json) = fs::read_to_string(&journal)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+    {
+        collect_folder_names(&json, &mut folders);
+    }
+    Some(UnfinishedChange {
+        journal,
+        folders: folders.into_iter().collect(),
+    })
+}
+
+fn collect_folder_names(value: &serde_json::Value, out: &mut std::collections::BTreeSet<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, value) in map {
+                match value {
+                    serde_json::Value::String(name)
+                        if ["folder", "from", "to"].contains(&key.as_str()) =>
+                    {
+                        out.insert(name.clone());
+                    }
+                    other => collect_folder_names(other, out),
+                }
+            }
+        }
+        serde_json::Value::Array(items) => items.iter().for_each(|v| collect_folder_names(v, out)),
+        _ => {}
+    }
 }
 
 fn refuse_if_blocked(issues: &[Issue], override_issues: bool) -> Result<(), CommitError> {
@@ -1772,6 +1820,40 @@ fn commit_update_all_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unfinished_change_names_its_journal_and_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let records_path = dir.path().join("records.json");
+        assert_eq!(unfinished_change(&records_path), None);
+
+        let journal = dir.path().join(UNFINISHED_CHANGE_JOURNALS[0]);
+        fs::write(
+            &journal,
+            r#"{"format":1,"renames":[{"from":"Beta","to":"010-Beta","identity":"B","from_original":null,"to_original":"Beta"},{"from":"Alpha","to":"020-Alpha","identity":"A","from_original":null,"to_original":"Alpha"}]}"#,
+        )
+        .unwrap();
+        let change = unfinished_change(&records_path).unwrap();
+        assert_eq!(change.journal, journal);
+        assert_eq!(change.folders, ["010-Beta", "020-Alpha", "Alpha", "Beta"]);
+        fs::remove_file(&journal).unwrap();
+
+        let journal = dir.path().join(UNFINISHED_CHANGE_JOURNALS[1]);
+        fs::write(
+            &journal,
+            r#"{"format":2,"folder":"Foo","name":"Foo Deluxe"}"#,
+        )
+        .unwrap();
+        assert_eq!(unfinished_change(&records_path).unwrap().folders, ["Foo"]);
+        // An unreadable journal still counts, with no folders named.
+        fs::write(&journal, "not json").unwrap();
+        let change = unfinished_change(&records_path).unwrap();
+        assert!(change.folders.is_empty());
+        assert!(matches!(
+            begin_change(&records_path),
+            Err(CommitError::Unfinished(c)) if c == change
+        ));
+    }
 
     #[test]
     fn scan_skips_non_plugin_entries_and_zips() {

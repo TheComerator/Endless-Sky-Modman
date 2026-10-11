@@ -927,6 +927,11 @@ ul.plain li + li {
   cursor: pointer;
 }
 
+/* An unfinished renaming or naming: the message names a long journal path. */
+.unfinished-banner {
+  overflow-wrap: anywhere;
+}
+
 .order-excluded {
   margin-top: 28px;
 }

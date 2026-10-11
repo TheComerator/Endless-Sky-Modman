@@ -138,7 +138,9 @@ impl Shell {
         // progress (not against other writers of records.json: the window is narrow, and two
         // manager windows at once are not guarded at all).
         let game = (self.deps.detect_game)();
-        match load_order::default_backend().recover(&paths_of(paths), game) {
+        let journal = paths.records.with_file_name(load_order::JOURNAL_FILE);
+        let result = load_order::default_backend().recover(&paths_of(paths), game);
+        match &result {
             Ok(Recovery::Nothing) => {}
             Ok(Recovery::Finished { renames }) => {
                 tracing::warn!(renames, "finished an interrupted load-order change");
@@ -146,9 +148,16 @@ impl Shell {
             Ok(Recovery::RolledBack { renames, reason }) => {
                 tracing::warn!(renames, %reason, "undid an interrupted load-order change");
             }
+            Err(LoadOrderError::GameRunning) => {}
             Err(e) => {
                 tracing::warn!(error = %e, "couldn't recover an interrupted load-order change")
             }
+        }
+        // Kept so the refusal shown while it is unfinished can say what went wrong.
+        match result {
+            Ok(_) => self.note_recovery(&journal, None),
+            Err(LoadOrderError::GameRunning) => {}
+            Err(e) => self.note_recovery(&journal, Some(e.to_string())),
         }
     }
 
@@ -184,6 +193,9 @@ impl Shell {
         let naming = naming_paths(&snap.paths);
         Ok(LoadOrderState {
             enabled: true,
+            unfinished: self
+                .unfinished_refusal(&snap.paths)
+                .map(|e| e.message().to_string()),
             plugins: layout
                 .ordered
                 .iter()
@@ -392,6 +404,9 @@ impl Shell {
             return Err(CmdError::game_running());
         }
         let (_, snap) = self.snapshot()?;
+        if let Some(refusal) = self.unfinished_refusal(&snap.paths) {
+            return Err(refusal);
+        }
         require_nameable(&snap, folder)?;
         let paths = naming_paths(&snap.paths);
         let plan = plugin_naming::plan_name(
@@ -423,6 +438,11 @@ impl Shell {
         );
         if touched {
             self.reset_plans();
+        }
+        if let Err(NamingError::Busy) = &result
+            && let Some(refusal) = self.unfinished_refusal(&snap.paths)
+        {
+            return Err(refusal);
         }
         let outcome = result.map_err(|e| {
             tracing::error!(error = %e, "plugin naming failed");
@@ -456,6 +476,10 @@ impl Shell {
             return Err(CmdError::game_running());
         }
         let (_, snap) = self.snapshot()?;
+        // An unfinished renaming or naming (one the snapshot couldn't finish) comes first.
+        if let Some(refusal) = self.unfinished_refusal(&snap.paths) {
+            return Err(refusal);
+        }
         let backend = load_order::default_backend();
         let plan = make_plan(&backend, &snap).map_err(cmd_err)?;
         if plan_token(&plan) != token {
@@ -476,6 +500,11 @@ impl Shell {
         );
         if touched {
             self.reset_plans();
+        }
+        if let Err(LoadOrderError::JournalPending) = &result
+            && let Some(refusal) = self.unfinished_refusal(&snap.paths)
+        {
+            return Err(refusal);
         }
         let outcome = result.map_err(|e| {
             tracing::error!(error = %e, "load order commit failed");
@@ -1246,6 +1275,31 @@ mod tests {
     }
 
     #[test]
+    fn the_page_shows_an_unfinished_change_and_why() {
+        let w = World::new();
+        w.add("Alpha", Some("Alpha P"));
+        w.shell.load_order_set_enabled(true).unwrap();
+        assert_eq!(w.shell.load_order_state().unwrap().unfinished, None);
+        // A load-order journal that can't be read: recovery fails, and keeps failing.
+        let journal = w.paths().records.with_file_name(load_order::JOURNAL_FILE);
+        fs::write(&journal, "not json").unwrap();
+        let banner = w.shell.load_order_state().unwrap().unfinished.unwrap();
+        assert!(banner.contains("unreadable"), "{banner}");
+        assert!(banner.contains(&journal.display().to_string()));
+        // And applying an order is refused with the same explanation.
+        let err = w
+            .shell
+            .load_order_commit_apply(strs(&["Alpha"]), "any")
+            .unwrap_err();
+        assert!(err.message().contains("unreadable"), "{err:?}");
+
+        GAME_RUNNING.with(|g| g.set(true));
+        let banner = w.shell.load_order_state().unwrap().unfinished.unwrap();
+        assert!(banner.contains("close it"), "{banner}");
+        GAME_RUNNING.with(|g| g.set(false));
+    }
+
+    #[test]
     fn a_blank_name_line_is_explained_instead_of_guessed_at() {
         let w = World::new();
         w.add("Anon", None);
@@ -1431,6 +1485,7 @@ mod tests {
             assert_eq!(state["excluded"][0]["folder"], "Anon");
             assert_eq!(state["excluded"][0]["canName"], true);
             assert_eq!(state["excluded"][0]["nameHint"], serde_json::Value::Null);
+            assert_eq!(state["unfinished"], serde_json::Value::Null);
 
             let typed = call(
                 "load_order_plan_name",

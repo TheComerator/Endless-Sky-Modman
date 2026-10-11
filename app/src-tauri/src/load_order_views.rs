@@ -187,6 +187,9 @@ pub struct LoadOrderState {
     pub excluded: Vec<LoadOrderExcludedView>,
     /// How many folders currently carry a prefix this feature added.
     pub renamed_count: u32,
+    /// While an earlier renaming or naming is unfinished (nothing else can be changed until it
+    /// is), what to tell the user: what it is, why, and what they can do. Shown as a banner.
+    pub unfinished: Option<String>,
 }
 
 impl LoadOrderState {
@@ -197,6 +200,7 @@ impl LoadOrderState {
             plugins: Vec::new(),
             excluded: Vec::new(),
             renamed_count,
+            unfinished: None,
         }
     }
 }
