@@ -66,7 +66,7 @@ xattr -cr "/Applications/Endless Sky Mod Manager.app"
 
 ## First run
 
-1. Open the app. It looks for Endless Sky automatically and shows what it found in the top bar. If it finds nothing, add your game folder under **Settings**.
+1. Open the app. It looks for Endless Sky automatically and shows what it found in the top bar. If it finds nothing, pick the folder the game is installed in under **Settings → Game Folder** and it finds the rest.
 2. Open **Browse**, pick a plugin, and click **Install**. A short review shows exactly what will happen before anything is written.
 3. Use the switches on the **Installed** page to turn plugins on and off, and **Launch game** to play.
 

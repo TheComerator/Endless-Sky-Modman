@@ -18,24 +18,33 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use esmm_core::game_install::{DetectEnv, GameInstall, InstallKind};
+use esmm_core::game_install::{self, DetectEnv, GameInstall, InstallKind};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const SETTINGS_FILE: &str = "settings.json";
 
-/// An install the user added by hand (decision H's override; e.g. an AppImage, or a game run
-/// with `-c <dir>`).
+/// An install the user added by hand (decision H's override): by the folder the game is
+/// installed in, or an AppImage / game run with `-c <dir>` given as an executable and/or a
+/// config folder.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CustomInstall {
     /// `None`: the default config dir (an executable-only addition, like an AppImage).
     pub config_dir: Option<PathBuf>,
     pub executable: Option<PathBuf>,
+    /// The game's installation folder. When set, the executable, the kind of install and the
+    /// config folder are worked out from it each time (so a game that is updated or moved is
+    /// still found) and the other two fields are not used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game_folder: Option<PathBuf>,
 }
 
 impl CustomInstall {
     pub fn to_install(&self, env: Option<&DetectEnv>) -> Option<GameInstall> {
+        if let Some(folder) = &self.game_folder {
+            return game_install::install_from_game_folder(env?, folder).ok();
+        }
         match (&self.config_dir, &self.executable, env) {
             (Some(dir), exe, _) => Some(GameInstall::custom(dir.clone(), exe.clone())),
             (None, Some(exe), Some(env)) => Some(GameInstall::standalone(env, exe.clone())),
@@ -162,6 +171,7 @@ mod tests {
             custom: vec![CustomInstall {
                 config_dir: Some("/x".into()),
                 executable: None,
+                game_folder: Some("/games/es".into()),
             }],
             manage_load_order: true,
         };

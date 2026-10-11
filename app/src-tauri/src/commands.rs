@@ -134,6 +134,11 @@ pub async fn add_custom_install(
 }
 
 #[tauri::command]
+pub async fn add_game_folder(state: State<'_, AppState>, path: String) -> CmdResult<InstallsView> {
+    blocking(&state, "add_game_folder", move |s| s.add_game_folder(&path)).await
+}
+
+#[tauri::command]
 pub async fn remove_custom_install(
     state: State<'_, AppState>,
     key: String,
