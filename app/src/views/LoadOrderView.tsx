@@ -768,6 +768,9 @@ export function LoadOrderView({ loadOrder, manager, notify }: { loadOrder: LoadO
                   </div>
                   {e.folder !== e.identity && <div className="muted folder">{e.folder}</div>}
                   <div className="muted deps">{describeExclusion(e.reasons, e.stillRenamed, e.canName)}</div>
+                  {!e.canName && e.nameHint && (
+                    <div className="muted deps">It can&apos;t be given a name yet: {e.nameHint}</div>
+                  )}
                 </div>
                 {e.canName && (
                   <div className="row-actions">

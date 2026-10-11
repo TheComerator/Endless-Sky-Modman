@@ -7,7 +7,7 @@ use std::collections::HashSet;
 
 use esmm_core::load_order::{ChangeKind, ChangePlan, ExcludeReason, Violation, WinnerChange};
 use esmm_core::overlap::OverlapItem;
-use esmm_core::plugin_naming::{NamingPlan, Relation};
+use esmm_core::plugin_naming::{LinePosition, NamingPlan, Relation};
 use serde::Serialize;
 use ts_rs::TS;
 
@@ -60,6 +60,10 @@ pub struct LoadOrderExcludedView {
     /// Its only problem is that its `plugin.txt` has no name (and the manager has a record of
     /// it), so the page offers "Give it a name…" (`load_order_plan_name`).
     pub can_name: bool,
+    /// When a name is what it lacks but it can't be given one here, why not (its folder still
+    /// has a number, it is a link to a folder elsewhere, its plugin.txt has an empty `name`
+    /// line...), shown in place of the button.
+    pub name_hint: Option<String>,
 }
 
 /// How another plugin's `plugin.txt` mentions the plugin being named.
@@ -105,6 +109,8 @@ pub struct LoadOrderNamePlanView {
     pub old_identity: String,
     /// The exact line added to `plugin.txt`, e.g. `name "Foo"`.
     pub line: String,
+    /// The line goes at the end of the file instead of the top (its first line is indented).
+    pub line_at_end: bool,
     /// There is no `plugin.txt` yet; one is created holding just `line`.
     pub creates_file: bool,
     /// Where a copy of `plugin.txt` as it was (or a note that there was none) is kept.
@@ -113,6 +119,9 @@ pub struct LoadOrderNamePlanView {
     pub identity_changes: bool,
     /// Whether it is switched on now; the setting moves to the new name unchanged.
     pub enabled: bool,
+    /// Where `plugins.txt` is copied first (`plugins.txt.esmm-naming-bak`), when a new name
+    /// changes it.
+    pub plugins_txt_backup: Option<String>,
     /// Profiles that list it under its old name; they are updated to the new name.
     pub profiles: Vec<String>,
     /// Other plugins whose dependencies mention the old name.
@@ -128,10 +137,15 @@ impl LoadOrderNamePlanView {
             name: plan.name.clone(),
             old_identity: plan.old_identity.clone(),
             line: plan.line.clone(),
+            line_at_end: plan.position == LinePosition::End,
             creates_file: plan.creates_file(),
             backup: plan.backup_path.display().to_string(),
             identity_changes: plan.identity_changes(),
             enabled: plan.enabled,
+            plugins_txt_backup: plan
+                .plugin_states_backup
+                .as_ref()
+                .map(|p| p.display().to_string()),
             profiles: plan.profiles.clone(),
             dependents: plan
                 .dependents
@@ -155,6 +169,8 @@ pub struct LoadOrderNameCommitView {
     /// Where the copy of the old `plugin.txt` (or the note) was saved.
     pub backup: String,
     pub identity_changed: bool,
+    /// Where `plugins.txt` was copied before it changed, if it did.
+    pub plugins_txt_backup: Option<String>,
     /// The game's process list couldn't be read while `plugins.txt` was written.
     pub game_detection_failed: bool,
 }

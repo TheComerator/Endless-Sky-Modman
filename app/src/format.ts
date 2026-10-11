@@ -64,6 +64,11 @@ export function describeIssue(issue: IssueView): Described {
         title: "Would duplicate an existing plugin",
         detail: `${issue.identity} is already installed as ${issue.existingFolder}. Installing this would add a second, differently named copy (${issue.newFolder}) with the same identity, and the game would only load one of them.`,
       };
+    case "addedNameCannotBeKept":
+      return {
+        title: "Its name can't be kept",
+        detail: `The manager added the name "${issue.name}" to the plugin in ${issue.folder}, but the new version's plugin.txt has an empty name line, so that name can't be put back. Updating anyway means the game will know it by another name, so its on/off setting and profile entries won't apply to it.`,
+      };
   }
 }
 

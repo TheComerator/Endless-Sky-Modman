@@ -18,6 +18,10 @@ oldIdentity: string,
  */
 line: string, 
 /**
+ * The line goes at the end of the file instead of the top (its first line is indented).
+ */
+lineAtEnd: boolean, 
+/**
  * There is no `plugin.txt` yet; one is created holding just `line`.
  */
 createsFile: boolean, 
@@ -33,6 +37,11 @@ identityChanges: boolean,
  * Whether it is switched on now; the setting moves to the new name unchanged.
  */
 enabled: boolean, 
+/**
+ * Where `plugins.txt` is copied first (`plugins.txt.esmm-naming-bak`), when a new name
+ * changes it.
+ */
+pluginsTxtBackup: string | null, 
 /**
  * Profiles that list it under its old name; they are updated to the new name.
  */

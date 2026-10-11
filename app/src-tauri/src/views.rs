@@ -400,6 +400,12 @@ pub enum IssueView {
         existing_folder: String,
         new_folder: String,
     },
+    /// The manager added `name` to this plugin's plugin.txt, and the new version has a blank
+    /// `name` line, so the name can't be kept.
+    AddedNameCannotBeKept {
+        folder: String,
+        name: String,
+    },
 }
 
 impl From<&Issue> for IssueView {
@@ -458,6 +464,9 @@ impl From<&Issue> for IssueView {
                 existing_folder,
                 new_folder,
             },
+            Issue::AddedNameCannotBeKept { folder, name } => {
+                IssueView::AddedNameCannotBeKept { folder, name }
+            }
         }
     }
 }

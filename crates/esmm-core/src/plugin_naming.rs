@@ -10,10 +10,21 @@
 //! `plugins.txt`, profiles and other plugins' `requires` are concerned. Jon decided on
 //! 2026-10-11 that such a plugin should instead be offered a name: either its folder name (the
 //! default, which changes nothing about who the plugin is) or a name the user types. Once it
-//! has a name it can be ordered like any other plugin.
+//! has a name it can be ordered like any other plugin. It has no switch of its own: it lives
+//! behind the load-order switch, and every write needs a reviewed confirmation.
 //!
 //! This is the first time the manager writes **inside** a plugin folder, so this module is
 //! deliberately narrow about what it touches.
+//!
+//! # Who can be given a name ([`can_name`])
+//!
+//! A plugin the manager has a record of (installed by it, or hand-added and linked to the
+//! catalog), whose `plugin.txt` is missing or has no top-level `name`, whose folder name is one
+//! the load-order feature would number, whose folder is **not** currently numbered (put the
+//! original names back first: naming a `020-Foo` folder would otherwise make `020-Foo` its
+//! name), and whose folder is a real folder, not a symlink or (on Windows) a junction pointing
+//! somewhere else (someone's own checkout, say). A `plugin.txt` that already has a `name` line
+//! with nothing usable after it is refused with "edit it by hand", never guessed at.
 //!
 //! # What is written, and where
 //!
@@ -22,20 +33,22 @@
 //!   file has one) and uses the file's own line ending (`\r\n` if its first line ends that way;
 //!   *(inference)*). If the file's first line is indented, a line above it would turn it into a
 //!   child of `name` and change what the file means, so in that one case the line goes at the
-//!   end instead; either way the result is checked to read exactly like the old file plus the
-//!   name. A plugin with no `plugin.txt` gets a new one holding just that line.
+//!   end instead (the plan says which); either way the result is checked to read exactly like
+//!   the old file plus the name. A plugin with no `plugin.txt` gets a new one holding just that
+//!   line. A `plugin.txt` that is itself a symlink is replaced by a plain file (the atomic
+//!   rename replaces the link); the file it pointed to is not touched.
 //! * The name is always written in quotes (`name "Foo"`, or in backticks if it contains a double
 //!   quote) *(inference: matches how most plugins write it, and keeps a name starting with `#`
 //!   from being read as a comment)*.
 //! * The write is atomic (temporary file, then rename) and is read back: if the file doesn't
 //!   then read back with exactly that name, the original bytes are put back (or the new file is
-//!   removed) and nothing else happens.
+//!   removed).
 //! * Before that, a copy of the file as it was is kept in the manager's own folder for this
 //!   install, `<install state dir>/plugin-txt-backups/<folder>.plugin.txt` (or a short note,
 //!   `<folder>.no-plugin-txt`, if there was no file), never inside the plugin folder. There is
-//!   no "remove the name" button yet; that copy is what to restore by hand.
-//! * The install record gets `added_name` (see `records::InstallRecord`), so the name is put
-//!   back after every update ([`reapply_to_staged`], called from `manager`'s commit functions).
+//!   no "remove the name" button yet; putting that copy back by hand is a real undo (see
+//!   "Updates" below).
+//! * The install record gets `added_name` (see `records::InstallRecord`).
 //!
 //! # A typed name changes who the plugin is
 //!
@@ -44,6 +57,8 @@
 //! switched-off plugin stays off), its entries in every profile, and its install record. It
 //! can't edit other plugins' files, so another plugin that `requires`, lists as `optional` or
 //! `conflicts` with the old name stops matching it; the plan lists those so the review can warn.
+//! `plugins.txt` is copied once, before anything changes, to `plugins.txt.esmm-naming-bak`, and
+//! then written without touching the toggle backup `plugins.txt.esmm-bak`.
 //!
 //! The steps run in this order, and a journal (`plugin-naming-journal.json`, beside
 //! `records.json`) is written before the first one and removed after the last:
@@ -64,17 +79,36 @@
 //!   the right value, so a switched-off plugin is never switched on. Recovery finishes step 3.
 //! * During step 3: each part of it can be done twice without harm, so recovery just does it.
 //!
+//! If step 2 itself reports an error, what is on disk decides, not the error: the file is read
+//! again, and if it carries the new name the change is finished, if it doesn't it is undone,
+//! and if it can't be read the journal is left for [`recover`].
+//!
 //! Recovery waits while the game runs (it writes `plugins.txt`); until then the journal stays and
-//! new naming or load-order changes are refused. If the old name is also another installed
-//! plugin's identity (two plugins claiming one name), its `plugins.txt` and profile entries are
-//! left in place for that plugin and only copied to the new name.
+//! new naming, load-order changes and the manager's own commits are refused. If the old name is
+//! also another installed plugin's identity (two plugins claiming one name), its `plugins.txt`
+//! and profile entries are left in place for that plugin and only copied to the new name.
+//!
+//! # Updates
+//!
+//! An update replaces the whole folder, so the line would vanish and the plugin's identity
+//! silently fall back to its folder name. Before a downloaded copy replaces a plugin whose
+//! record has `added_name`, [`reapply_decision`] decides, and the commit (`manager`) writes the
+//! same name into the copy while it is still in staging:
+//!
+//! * the name is written back only if the copy being replaced still carries exactly that name
+//!   (if the user removed or changed it by hand, or put the backup back, that choice stands and
+//!   `added_name` is cleared);
+//! * if the new version names itself, nothing is written and `added_name` is cleared;
+//! * if the new version has a blank `name` line, planning reports a blocking problem
+//!   (`AddedNameCannotBeKept`); updating anyway installs it without the name.
 //!
 //! # Removing the feature
 //!
 //! This module belongs to the optional load-order feature; `crate::load_order`'s header lists
-//! what to delete. Note that a plugin named here keeps depending on [`reapply_to_staged`] at
-//! every update, so this file and its two hooks in `manager.rs` should stay while any install
-//! record has an `added_name`.
+//! what to delete, for removing the load order, this naming step, or both. A plugin named here
+//! keeps depending on [`reapply_decision`] at every update, so this file and its hooks in
+//! `manager.rs` must stay while any install record has an `added_name`. This file does not
+//! depend on `load_order.rs`.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -89,7 +123,7 @@ use crate::files;
 use crate::game_state::{self, GameProcess};
 use crate::manager::{self, InstalledPlugin};
 use crate::plugin_meta::PluginMeta;
-use crate::plugin_state::PluginStates;
+use crate::plugin_state::{self, PluginStates};
 use crate::profiles::ProfileStore;
 use crate::records::{self, InstallRecord};
 
@@ -100,9 +134,14 @@ pub const JOURNAL_FILE: &str = "plugin-naming-journal.json";
 pub const LOAD_ORDER_JOURNAL_FILE: &str = "load-order-journal.json";
 /// Copies of `plugin.txt` as it was before the manager added a name, beside `records.json`.
 pub const BACKUP_DIR: &str = "plugin-txt-backups";
+/// Where `plugins.txt` is copied (in the game's config dir) before a typed name changes it. Not
+/// the toggle backup `plugins.txt.esmm-bak`, which naming never touches.
+pub const PLUGIN_STATES_BACKUP_FILE: &str = "plugins.txt.esmm-naming-bak";
 /// Longest name accepted, in bytes. Real plugin names are a few dozen.
 pub const MAX_NAME_BYTES: usize = 200;
 const PLUGIN_TXT: &str = "plugin.txt";
+/// Longest folder name every supported filesystem accepts; a numbered folder adds 4 bytes.
+const MAX_FOLDER_NAME_BYTES: usize = 255;
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -143,6 +182,18 @@ pub enum NamingError {
         "The plugin.txt in {0:?} already has a `name` line with nothing usable after it. The manager won't guess what was meant: edit that line by hand (or delete it), then try again."
     )]
     BlankNameLine(String),
+    #[error(
+        "Its folder still has a load-order number ({folder:?}). Put the original folder names back first (Restore original names), then give it a name."
+    )]
+    RestoreFirst { folder: String },
+    #[error(
+        "Its folder name ({0:?}) isn't one the manager numbers (odd characters, or too long), so a name wouldn't let it be ordered."
+    )]
+    UnsupportedFolder(String),
+    #[error(
+        "{0:?} is a link (a symlink or junction) to a folder somewhere else, so the manager won't write into it."
+    )]
+    Linked(String),
     #[error("The plugin.txt in {0:?} isn't plain UTF-8 text, so the manager won't change it.")]
     Unreadable(String),
     #[error(
@@ -259,13 +310,29 @@ fn naming_of(text: Option<&str>) -> Naming {
     }
 }
 
+/// Where the name line goes in an existing `plugin.txt`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinePosition {
+    /// At the top (the usual case), or the whole of a new file.
+    Top,
+    /// At the end, because the file's first line is indented.
+    End,
+}
+
 /// The new contents of `plugin.txt`: `original` (or nothing, if there was no file) with the
 /// name line added, every other byte unchanged. Pure; see the module docs for where the line
 /// goes. Fails if the result would not read as the old file plus the name.
 pub fn with_name_line(original: Option<&[u8]>, name: &str) -> Result<Vec<u8>, NamingError> {
+    placed_name_line(original, name).map(|(bytes, _)| bytes)
+}
+
+fn placed_name_line(
+    original: Option<&[u8]>,
+    name: &str,
+) -> Result<(Vec<u8>, LinePosition), NamingError> {
     let line = name_line(name);
     let Some(original) = original else {
-        return Ok(format!("{line}\n").into_bytes());
+        return Ok((format!("{line}\n").into_bytes(), LinePosition::Top));
     };
     let text =
         std::str::from_utf8(original).map_err(|_| NamingError::Unreadable(PLUGIN_TXT.into()))?;
@@ -284,7 +351,7 @@ pub fn with_name_line(original: Option<&[u8]>, name: &str) -> Result<Vec<u8>, Na
     let mut expected = vec![name_node.clone()];
     expected.extend(before.iter().cloned());
     if datanode::parse(&at_top) == expected {
-        return Ok(at_top.into_bytes());
+        return Ok((at_top.into_bytes(), LinePosition::Top));
     }
 
     // The first line is indented: put the line at the end instead.
@@ -297,7 +364,7 @@ pub fn with_name_line(original: Option<&[u8]>, name: &str) -> Result<Vec<u8>, Na
     let mut expected = before;
     expected.push(name_node);
     if datanode::parse(&at_end) == expected {
-        return Ok(at_end.into_bytes());
+        return Ok((at_end.into_bytes(), LinePosition::End));
     }
     Err(NamingError::WouldChangeMeaning(PLUGIN_TXT.into()))
 }
@@ -321,23 +388,52 @@ fn naming_of_bytes(bytes: Option<&[u8]>, folder: &str) -> Result<Naming, NamingE
     }
 }
 
-type WriteFn<'a> = &'a dyn Fn(&Path, &[u8]) -> io::Result<()>;
+/// True if these `plugin.txt` bytes name the plugin exactly `name`.
+fn carries_name(bytes: &[u8], name: &str) -> bool {
+    std::str::from_utf8(bytes)
+        .ok()
+        .and_then(|text| PluginMeta::parse(text).name)
+        .as_deref()
+        == Some(name)
+}
+
+/// The file operations a name write uses; tests swap them to simulate failing disks.
+#[derive(Clone, Copy)]
+struct FileOps<'a> {
+    write: &'a dyn Fn(&Path, &[u8]) -> io::Result<()>,
+    read: &'a dyn Fn(&Path) -> io::Result<Vec<u8>>,
+    remove: &'a dyn Fn(&Path) -> io::Result<()>,
+}
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     files::write_atomic(path, bytes)
 }
 
+fn read_file(path: &Path) -> io::Result<Vec<u8>> {
+    fs::read(path)
+}
+
+fn remove_file(path: &Path) -> io::Result<()> {
+    fs::remove_file(path)
+}
+
+const REAL_FILES: FileOps<'static> = FileOps {
+    write: &write_atomic,
+    read: &read_file,
+    remove: &remove_file,
+};
+
 /// Writes the name into `plugin_dir/plugin.txt` (whose current bytes are `original`) and reads
 /// it back. If it doesn't read back with exactly `name`, the original is put back.
 fn write_name(plugin_dir: &Path, original: Option<&[u8]>, name: &str) -> Result<(), NamingError> {
-    write_name_with(plugin_dir, original, name, &write_atomic)
+    write_name_with(plugin_dir, original, name, REAL_FILES)
 }
 
 fn write_name_with(
     plugin_dir: &Path,
     original: Option<&[u8]>,
     name: &str,
-    write: WriteFn,
+    ops: FileOps,
 ) -> Result<(), NamingError> {
     let path = plugin_dir.join(PLUGIN_TXT);
     let contents = with_name_line(original, name)?;
@@ -348,25 +444,29 @@ fn write_name_with(
         .ok()
         .map(|m| m.permissions())
         .or_else(|| new_file_permissions(plugin_dir));
-    write(&path, &contents)?;
+    (ops.write)(&path, &contents)?;
     if let Some(permissions) = permissions {
         let _ = fs::set_permissions(&path, permissions);
     }
-    let read_back = fs::read(&path)
-        .ok()
-        .and_then(|bytes| String::from_utf8(bytes).ok())
-        .and_then(|text| PluginMeta::parse(&text).name);
-    if read_back.as_deref() == Some(name) {
+    let read_back = (ops.read)(&path);
+    if read_back
+        .as_ref()
+        .is_ok_and(|bytes| carries_name(bytes, name))
+    {
         return Ok(());
     }
     let put_back = match original {
-        Some(bytes) => files::write_atomic(&path, bytes),
-        None => fs::remove_file(&path),
+        Some(bytes) => (ops.write)(&path, bytes),
+        None => (ops.remove)(&path),
+    };
+    let read = match &read_back {
+        Ok(bytes) => format!("it read back as {:?}", String::from_utf8_lossy(bytes)),
+        Err(e) => format!("it couldn't be read back: {e}"),
     };
     Err(NamingError::ReadBackFailed(match put_back {
-        Ok(()) => format!("read back {read_back:?}"),
+        Ok(()) => read,
         Err(e) => format!(
-            "read back {read_back:?}, and putting the old file back failed too: {e}; a copy is in the manager's plugin-txt-backups folder"
+            "{read}, and putting the old file back failed too: {e}; a copy is in the manager's plugin-txt-backups folder"
         ),
     }))
 }
@@ -407,6 +507,14 @@ impl Paths<'_> {
 
     fn load_order_journal_path(&self) -> PathBuf {
         self.records_path.with_file_name(LOAD_ORDER_JOURNAL_FILE)
+    }
+
+    fn states_path(&self) -> PathBuf {
+        self.config_dir.join(game_state::PLUGINS_FILE)
+    }
+
+    fn states_backup_path(&self) -> PathBuf {
+        self.config_dir.join(PLUGIN_STATES_BACKUP_FILE)
     }
 }
 
@@ -473,6 +581,77 @@ fn is_plain_folder_name(folder: &str) -> bool {
     matches!(parts.next(), Some(Component::Normal(_))) && parts.next().is_none()
 }
 
+/// The folder name rule the load-order feature uses for "a name it numbers" (its
+/// `UnsupportedFolderName` reason, for a folder that isn't numbered; a test in `load_order.rs`
+/// checks they agree). Repeated here so this file doesn't depend on `load_order.rs`.
+pub fn folder_can_take_a_number(folder: &str) -> bool {
+    is_plain_folder_name(folder)
+        && crate::install::sanitize_folder_name(folder) == folder
+        && folder.len() + 4 <= MAX_FOLDER_NAME_BYTES
+}
+
+/// True for a symlink, or on Windows any reparse point (a junction, say): a link to a folder
+/// that may belong to someone else.
+fn is_link(meta: &fs::Metadata) -> bool {
+    if meta.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    false
+}
+
+/// The checks on the folder and the record, shared by planning and committing.
+fn check_folder(
+    plugins_dir: &Path,
+    folder: &str,
+    record: Option<&InstallRecord>,
+) -> Result<(), NamingError> {
+    let record = record.ok_or_else(|| NamingError::NotLinked(folder.to_string()))?;
+    if record
+        .original_folder
+        .as_deref()
+        .is_some_and(|original| original != folder)
+    {
+        return Err(NamingError::RestoreFirst {
+            folder: folder.to_string(),
+        });
+    }
+    if !folder_can_take_a_number(folder) {
+        return Err(NamingError::UnsupportedFolder(folder.to_string()));
+    }
+    let meta = fs::symlink_metadata(plugins_dir.join(folder))
+        .map_err(|_| NamingError::Missing(folder.to_string()))?;
+    if is_link(&meta) {
+        return Err(NamingError::Linked(folder.to_string()));
+    }
+    if !meta.is_dir() {
+        return Err(NamingError::Missing(folder.to_string()));
+    }
+    Ok(())
+}
+
+/// Whether `plugin` can be offered a name (`Ok`), and if not, why, in words the Load order page
+/// can show. Planning and committing check the same things.
+pub fn can_name(paths: &Paths, plugin: &InstalledPlugin) -> Result<(), NamingError> {
+    check_folder(&paths.plugins_dir(), &plugin.folder, plugin.record.as_ref())?;
+    let original = read_plugin_txt(&paths.plugins_dir().join(&plugin.folder))?;
+    match naming_of_bytes(original.as_deref(), &plugin.folder)? {
+        Naming::Named(name) => Err(NamingError::AlreadyNamed {
+            folder: plugin.folder.clone(),
+            name,
+        }),
+        Naming::BlankNameLine => Err(NamingError::BlankNameLine(plugin.folder.clone())),
+        Naming::NoFile | Naming::NoName => Ok(()),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Planning
 // ---------------------------------------------------------------------------
@@ -513,11 +692,16 @@ pub struct NamingPlan {
     pub old_identity: String,
     /// The exact line added to `plugin.txt`.
     pub line: String,
+    /// Where the line goes (the end only when the file's first line is indented).
+    pub position: LinePosition,
     /// SHA-256 of `plugin.txt` when planned; `None` if there was none (one will be created).
     /// The commit refuses if the file has changed since.
     pub original_sha256: Option<String>,
     /// Where the copy of `plugin.txt` as it was (or the note that there was none) will be kept.
     pub backup_path: PathBuf,
+    /// Where `plugins.txt` will be copied before it changes (only when the identity changes
+    /// and there is a `plugins.txt`).
+    pub plugin_states_backup: Option<PathBuf>,
     /// Whether the plugin is switched on now (its setting carries over to a new name).
     pub enabled: bool,
     /// Profiles that list the plugin under its old identity (only when the identity changes).
@@ -538,9 +722,8 @@ impl NamingPlan {
     }
 }
 
-/// Plans adding `choice` as the name of the plugin in `folder`. Refuses a plugin the manager
-/// has no record of, one that already has a name, and one whose `plugin.txt` has a blank `name`
-/// line (which the user should fix by hand rather than have guessed at).
+/// Plans adding `choice` as the name of the plugin in `folder`. Refuses everything
+/// [`can_name`] refuses.
 pub fn plan_name(
     paths: &Paths,
     installed: &[InstalledPlugin],
@@ -552,24 +735,12 @@ pub fn plan_name(
         .iter()
         .find(|p| p.folder == folder)
         .ok_or_else(|| NamingError::Missing(folder.to_string()))?;
+    can_name(paths, plugin)?;
     let record = plugin
         .record
         .as_ref()
         .ok_or_else(|| NamingError::NotLinked(folder.to_string()))?;
-    if !is_plain_folder_name(folder) {
-        return Err(NamingError::Missing(folder.to_string()));
-    }
     let original = read_plugin_txt(&paths.plugins_dir().join(folder))?;
-    match naming_of_bytes(original.as_deref(), folder)? {
-        Naming::Named(name) => {
-            return Err(NamingError::AlreadyNamed {
-                folder: folder.to_string(),
-                name,
-            });
-        }
-        Naming::BlankNameLine => return Err(NamingError::BlankNameLine(folder.to_string())),
-        Naming::NoFile | Naming::NoName => {}
-    }
     let name = match choice {
         NameChoice::FolderName => {
             validate_name(folder, folder, installed).map_err(NamingError::FolderNameUnusable)?
@@ -577,7 +748,7 @@ pub fn plan_name(
         NameChoice::Typed(raw) => validate_name(raw, folder, installed)?,
     };
     // Make sure the line can be added to this particular file before offering it.
-    with_name_line(original.as_deref(), &name).map_err(|e| match e {
+    let (_, position) = placed_name_line(original.as_deref(), &name).map_err(|e| match e {
         NamingError::Unreadable(_) => NamingError::Unreadable(folder.to_string()),
         NamingError::WouldChangeMeaning(_) => NamingError::WouldChangeMeaning(folder.to_string()),
         other => other,
@@ -604,8 +775,11 @@ pub fn plan_name(
     Ok(NamingPlan {
         folder: folder.to_string(),
         line: name_line(&name),
+        position,
         enabled: game_state::effective_enabled(states, &old_identity),
         backup_path: backup_path(&backup_dir(paths.records_path), record, original.is_some()),
+        plugin_states_backup: (changes && paths.states_path().exists())
+            .then(|| paths.states_backup_path()),
         original_sha256: original.as_deref().map(sha256_hex),
         name,
         old_identity,
@@ -665,7 +839,8 @@ impl Journal {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NamingOutcome {
     pub backup_path: PathBuf,
-    /// Where `plugins.txt` was copied before it was changed (only when the identity changed).
+    /// Where `plugins.txt` was copied before it was changed (`plugins.txt.esmm-naming-bak`;
+    /// only when the identity changed and there was a `plugins.txt`).
     pub plugin_states_backup: Option<PathBuf>,
     /// `plugins.txt` was written while the game's process list couldn't be read.
     pub game_detection_failed: bool,
@@ -681,15 +856,18 @@ pub enum NamingRecovery {
     RolledBack { folder: String },
 }
 
+/// Writes `plugins.txt` (atomically) without touching the toggle backup `plugins.txt.esmm-bak`:
+/// the one copy a naming makes is `plugins.txt.esmm-naming-bak`, taken before step 1.
 fn write_states(
-    config_dir: &Path,
+    paths: &Paths,
     states: &PluginStates,
     game: GameProcess,
-) -> Result<game_state::WriteOutcome, NamingError> {
-    game_state::write_plugin_states(config_dir, states, game).map_err(|e| match e {
-        game_state::WriteError::GameRunning => NamingError::GameRunning,
-        game_state::WriteError::Io(e) => e.into(),
-    })
+) -> Result<(), NamingError> {
+    if game == GameProcess::Running {
+        return Err(NamingError::GameRunning);
+    }
+    files::write_atomic(&paths.states_path(), plugin_state::write(states).as_bytes())?;
+    Ok(())
 }
 
 fn write_journal(path: &Path, journal: &Journal) -> Result<(), NamingError> {
@@ -710,21 +888,21 @@ fn remove_journal(path: &Path) -> Result<(), NamingError> {
 }
 
 /// Carries out `plan`: see the module docs for the steps. Refuses while the game runs, while
-/// an earlier naming or load-order change is unfinished, and if the folder or its `plugin.txt`
-/// changed since `plan` was made.
+/// an earlier naming or load-order change is unfinished, and if the folder, its record or its
+/// `plugin.txt` changed since `plan` was made.
 pub fn commit_name(
     paths: &Paths,
     plan: &NamingPlan,
     game: GameProcess,
 ) -> Result<NamingOutcome, NamingError> {
-    commit_name_with(paths, plan, game, &write_atomic)
+    commit_name_with(paths, plan, game, REAL_FILES)
 }
 
 fn commit_name_with(
     paths: &Paths,
     plan: &NamingPlan,
     game: GameProcess,
-    write: WriteFn,
+    ops: FileOps,
 ) -> Result<NamingOutcome, NamingError> {
     if game == GameProcess::Running {
         return Err(NamingError::GameRunning);
@@ -734,14 +912,14 @@ fn commit_name_with(
     if journal_path.exists() || paths.load_order_journal_path().exists() {
         return Err(NamingError::Busy);
     }
-    if !is_plain_folder_name(&plan.folder) {
-        return Err(NamingError::Missing(plan.folder.clone()));
-    }
-    let dir = paths.plugins_dir().join(&plan.folder);
-    if !dir.is_dir() {
-        return Err(NamingError::Missing(plan.folder.clone()));
-    }
     // Looked at again: the plan may be a little old.
+    let records = records::load(paths.records_path).map_err(io_err)?;
+    check_folder(
+        &paths.plugins_dir(),
+        &plan.folder,
+        records.get(&plan.folder),
+    )?;
+    let dir = paths.plugins_dir().join(&plan.folder);
     let original = read_plugin_txt(&dir)?;
     if original.as_deref().map(sha256_hex) != plan.original_sha256 {
         return Err(NamingError::Changed(plan.folder.clone()));
@@ -751,10 +929,6 @@ fn commit_name_with(
         Naming::NoFile | Naming::NoName
     ) {
         return Err(NamingError::Changed(plan.folder.clone()));
-    }
-    let records = records::load(paths.records_path).map_err(io_err)?;
-    if !records.contains_key(&plan.folder) {
-        return Err(NamingError::NotLinked(plan.folder.clone()));
     }
 
     write_backup(&plan.backup_path, original.as_deref())?;
@@ -766,30 +940,48 @@ fn commit_name_with(
         old_identity: plan.old_identity.clone(),
         new_entry_before: states.get(&plan.name).copied(),
     };
+    // The one copy of plugins.txt this naming makes, before anything changes.
+    let mut states_backup = None;
+    if journal.identity_changes()
+        && let Ok(bytes) = fs::read(paths.states_path())
+    {
+        files::write_atomic(&paths.states_backup_path(), &bytes)?;
+        states_backup = Some(paths.states_backup_path());
+    }
     write_journal(&journal_path, &journal)?;
 
     // Step 1: the new name gets the old name's on/off value; the old entry stays.
-    let mut outcome = game_state::WriteOutcome {
-        backup: None,
-        detection_failed: false,
-    };
     if journal.identity_changes() {
         let on = game_state::effective_enabled(&states, &journal.old_identity);
         states.insert(journal.name.clone(), on);
-        match write_states(paths.config_dir, &states, game) {
-            Ok(written) => outcome = written,
-            Err(e) => {
-                // Nothing reached the plugin; undo whatever part of step 1 landed.
-                let _ = roll_back(paths, &journal, game);
-                return Err(e);
-            }
+        if let Err(e) = write_states(paths, &states, game) {
+            // Nothing reached the plugin; undo whatever part of step 1 landed.
+            let _ = roll_back(paths, &journal, game);
+            return Err(e);
         }
     }
 
-    // Step 2: the name itself.
-    if let Err(e) = write_name_with(&dir, original.as_deref(), &journal.name, write) {
-        let _ = roll_back(paths, &journal, game);
-        return Err(e);
+    // Step 2: the name itself. If it reports a problem, what is on disk now decides.
+    if let Err(e) = write_name_with(&dir, original.as_deref(), &journal.name, ops) {
+        match (ops.read)(&dir.join(PLUGIN_TXT)) {
+            Ok(bytes) if carries_name(&bytes, &journal.name) => {
+                tracing::warn!(error = %e, "the name is in plugin.txt after all; finishing");
+            }
+            Ok(_) => {
+                let _ = roll_back(paths, &journal, game);
+                return Err(e);
+            }
+            Err(read) if read.kind() == io::ErrorKind::NotFound => {
+                let _ = roll_back(paths, &journal, game);
+                return Err(e);
+            }
+            Err(read) => {
+                // Can't tell whether the name is there: leave the journal for `recover`.
+                return Err(NamingError::Io(format!(
+                    "{e} The file then couldn't be read at all ({read}), so the manager can't tell whether the name is there; it will finish or undo this the next time it reads your plugins."
+                )));
+            }
+        }
     }
 
     // Step 3: records, the old entry and profiles. A failure here leaves the journal, so the
@@ -804,8 +996,8 @@ fn commit_name_with(
     );
     Ok(NamingOutcome {
         backup_path: plan.backup_path.clone(),
-        plugin_states_backup: outcome.backup,
-        game_detection_failed: outcome.detection_failed,
+        plugin_states_backup: states_backup,
+        game_detection_failed: journal.identity_changes() && game == GameProcess::Unknown,
     })
 }
 
@@ -836,7 +1028,7 @@ fn finish(paths: &Paths, journal: &Journal, game: GameProcess) -> Result<(), Nam
         }
     }
     if states != before {
-        write_states(paths.config_dir, &states, game)?;
+        write_states(paths, &states, game)?;
     }
 
     let mut store = ProfileStore::load(paths.profiles_path).map_err(io_err)?;
@@ -870,7 +1062,7 @@ fn roll_back(paths: &Paths, journal: &Journal, game: GameProcess) -> Result<(), 
             None => states.remove(&journal.name),
         };
         if states != before {
-            write_states(paths.config_dir, &states, game)?;
+            write_states(paths, &states, game)?;
         }
     }
     remove_journal(&paths.journal_path())
@@ -908,10 +1100,9 @@ pub fn recover(paths: &Paths, game: GameProcess) -> Result<NamingRecovery, Namin
     if game == GameProcess::Running {
         return Err(NamingError::GameRunning);
     }
+    // An unreadable file leaves the journal for another try (the `?`).
     let named = read_plugin_txt(&paths.plugins_dir().join(&journal.folder))?
-        .and_then(|bytes| String::from_utf8(bytes).ok())
-        .and_then(|text| PluginMeta::parse(&text).name)
-        .is_some_and(|name| name == journal.name);
+        .is_some_and(|bytes| carries_name(&bytes, &journal.name));
     if named {
         finish(paths, &journal, game)?;
         remove_journal(&journal_path)?;
@@ -939,60 +1130,69 @@ pub fn recover(paths: &Paths, game: GameProcess) -> Result<NamingRecovery, Namin
 // Updates: putting the name back
 // ---------------------------------------------------------------------------
 
-/// For planning an update or reinstall: the identity the new copy will have once
-/// [`reapply_to_staged`] has run. `Some(name)` when `record` says the manager added a name and
-/// the downloaded copy (`staged_meta`) has none of its own; `None` otherwise (then the copy's
-/// own `plugin.txt` decides, as for any plugin).
-pub fn name_to_reapply(record: Option<&InstallRecord>, staged_meta: &PluginMeta) -> Option<String> {
-    let name = record?.added_name.as_ref()?;
-    staged_meta
-        .name
-        .as_deref()
-        .is_none_or(|n| n.trim().is_empty())
-        .then(|| name.clone())
+/// What an update or reinstall does about a name the manager added.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reapply {
+    /// Nothing to put back: the manager never named this plugin, the user removed or changed the
+    /// name by hand (that choice stands), or the new version names itself. The new record's
+    /// `added_name` is cleared.
+    Nothing,
+    /// Write this name into the new copy, and keep it as `added_name`.
+    Write(String),
+    /// The new version has a blank `name` line, so this name can't be put back; planning
+    /// reports it as a blocking problem, and updating anyway installs it without the name.
+    CannotKeep(String),
 }
 
-/// For the installer, before a downloaded copy (`staged_root`, still in the manager's staging
-/// folder) replaces a plugin: if the plugin's `record` says the manager added a name and the new
-/// copy has no `name` of its own, writes the same name into the copy, so it arrives in
-/// `plugins/` already named and its identity never changes. Returns what the new record's
-/// `added_name` should be:
-///
-/// * `Some(name)` when the name was written again;
-/// * `None` when there is nothing to put back, or when the new version now names itself (from
-///   then on its own name is its identity, as for any plugin; if that differs from the name the
-///   manager added, the plugin's identity changes upstream-side, which is out of this module's
-///   hands, exactly as when any plugin renames itself).
-///
-/// A copy whose `plugin.txt` has a blank `name` line is refused rather than guessed at, before
-/// anything is installed.
-pub fn reapply_to_staged(
-    staged_root: &Path,
+/// Decides what to do about a name the manager added, before a downloaded copy (`staged_root`,
+/// still in staging) replaces a plugin. `record` is the plugin's record and `installed_name` the
+/// `name` in the `plugin.txt` of the copy being replaced, right now. Planning and the commit both
+/// ask this, so a plan never expects something the commit won't do. Reads only.
+pub fn reapply_decision(
     record: Option<&InstallRecord>,
-    backup_dir: &Path,
-) -> Result<Option<String>, NamingError> {
-    let Some(record) = record else {
-        return Ok(None);
+    installed_name: Option<&str>,
+    staged_root: &Path,
+) -> Result<Reapply, NamingError> {
+    let Some(name) = record.and_then(|r| r.added_name.as_deref()) else {
+        return Ok(Reapply::Nothing);
     };
-    let Some(name) = record.added_name.as_deref() else {
-        return Ok(None);
-    };
-    let original = read_plugin_txt(staged_root)?;
-    match naming_of_bytes(original.as_deref(), &record.folder)? {
-        Naming::Named(_) => Ok(None),
-        Naming::BlankNameLine => Err(NamingError::Io(format!(
-            "The new version of {:?} has a `name` line with no name in its plugin.txt, so the manager can't put back the name {name:?} it added earlier. Nothing was installed.",
-            record.folder
-        ))),
-        Naming::NoFile | Naming::NoName => {
-            write_backup(
-                &backup_path(backup_dir, record, original.is_some()),
-                original.as_deref(),
-            )?;
-            write_name(staged_root, original.as_deref(), name)?;
-            Ok(Some(name.to_string()))
-        }
+    // Removed or changed by hand (or the backup put back): respect it.
+    if installed_name != Some(name) {
+        return Ok(Reapply::Nothing);
     }
+    let staged = read_plugin_txt(staged_root)?;
+    Ok(
+        match naming_of_bytes(staged.as_deref(), "the new version")? {
+            Naming::Named(_) => Reapply::Nothing,
+            Naming::BlankNameLine => Reapply::CannotKeep(name.to_string()),
+            Naming::NoFile | Naming::NoName => Reapply::Write(name.to_string()),
+        },
+    )
+}
+
+/// Carries out [`Reapply::Write`]: keeps a copy of the new version's `plugin.txt` as it came (the
+/// backup is about the version now installed) and writes the name into the staged copy, so it
+/// arrives in `plugins/` already named. `record` is the plugin's record (for the backup's name).
+pub fn write_name_into_staged(
+    staged_root: &Path,
+    record: &InstallRecord,
+    name: &str,
+    backup_dir: &Path,
+) -> Result<(), NamingError> {
+    let original = read_plugin_txt(staged_root)?;
+    write_backup(
+        &backup_path(backup_dir, record, original.is_some()),
+        original.as_deref(),
+    )?;
+    write_name(staged_root, original.as_deref(), name)
+}
+
+/// The `name` in `plugin_dir/plugin.txt` right now (`None`: no file or no name). An unreadable
+/// file is an error rather than "no name", so a name is never dropped by mistake.
+pub fn current_name(plugin_dir: &Path) -> Result<Option<String>, NamingError> {
+    Ok(read_plugin_txt(plugin_dir)?
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .and_then(|text| PluginMeta::parse(&text).name))
 }
 
 #[cfg(test)]
@@ -1116,6 +1316,64 @@ mod tests {
 
         fn journal_exists(&self) -> bool {
             self.paths().journal_path().exists()
+        }
+    }
+
+    /// File operations whose first write does `first_write` (later writes, like putting the old
+    /// file back, fail when `later_writes_fail`), and whose first `failing_reads` reads fail.
+    struct Faulty {
+        writes: std::cell::Cell<u32>,
+        reads: std::cell::Cell<u32>,
+        first_write: Option<&'static str>,
+        later_writes_fail: bool,
+        failing_reads: u32,
+    }
+
+    impl Faulty {
+        fn new(
+            first_write: Option<&'static str>,
+            later_writes_fail: bool,
+            failing_reads: u32,
+        ) -> Self {
+            Faulty {
+                writes: Default::default(),
+                reads: Default::default(),
+                first_write,
+                later_writes_fail,
+                failing_reads,
+            }
+        }
+
+        fn write(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
+            let n = self.writes.get() + 1;
+            self.writes.set(n);
+            match (n, self.first_write) {
+                (1, Some(text)) => fs::write(path, text),
+                (1, None) => write_atomic(path, bytes),
+                _ if self.later_writes_fail => Err(io::Error::other("disk gone")),
+                _ => write_atomic(path, bytes),
+            }
+        }
+
+        fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
+            let n = self.reads.get() + 1;
+            self.reads.set(n);
+            if n <= self.failing_reads {
+                Err(io::Error::other("can't read"))
+            } else {
+                fs::read(path)
+            }
+        }
+    }
+
+    fn ops<'a>(
+        write: &'a dyn Fn(&Path, &[u8]) -> io::Result<()>,
+        read: &'a dyn Fn(&Path) -> io::Result<Vec<u8>>,
+    ) -> FileOps<'a> {
+        FileOps {
+            write,
+            read,
+            remove: &remove_file,
         }
     }
 
@@ -1282,16 +1540,30 @@ mod tests {
     fn a_name_that_does_not_read_back_puts_the_original_file_back() {
         let w = World::new();
         w.add("Foo", Some("about \"x\"\n"));
-        // A filesystem that silently mangles what is written.
-        let mangle: WriteFn = &|path, _| fs::write(path, "name \"Something else\"\n");
-        let err =
-            write_name_with(&w.dir("Foo"), Some(b"about \"x\"\n"), "Foo", mangle).unwrap_err();
+        // A filesystem that silently mangles what is written (once).
+        let faulty = Faulty::new(Some("name \"Something else\"\n"), false, 0);
+        let (write, read) = (
+            |p: &Path, b: &[u8]| faulty.write(p, b),
+            |p: &Path| faulty.read(p),
+        );
+        let err = write_name_with(
+            &w.dir("Foo"),
+            Some(b"about \"x\"\n"),
+            "Foo",
+            ops(&write, &read),
+        )
+        .unwrap_err();
         assert!(matches!(err, NamingError::ReadBackFailed(_)), "{err:?}");
         assert_eq!(w.plugin_txt("Foo").unwrap(), b"about \"x\"\n");
 
         // With no file to begin with, the created one is removed again.
         w.add("Bar", None);
-        let err = write_name_with(&w.dir("Bar"), None, "Bar", mangle).unwrap_err();
+        let faulty = Faulty::new(Some("name \"Something else\"\n"), false, 0);
+        let (write, read) = (
+            |p: &Path, b: &[u8]| faulty.write(p, b),
+            |p: &Path| faulty.read(p),
+        );
+        let err = write_name_with(&w.dir("Bar"), None, "Bar", ops(&write, &read)).unwrap_err();
         assert!(matches!(err, NamingError::ReadBackFailed(_)));
         assert_eq!(w.plugin_txt("Bar"), None);
     }
@@ -1673,8 +1945,14 @@ mod tests {
 
     /// Runs a commit whose name write fails the given way, as a crash would stop it.
     fn crash_at_write(w: &World, plan: &NamingPlan) {
-        let fail: WriteFn = &|_, _| Err(io::Error::other("power cut"));
-        let err = commit_name_with(&w.paths(), plan, GameProcess::NotRunning, fail).unwrap_err();
+        let write = |_: &Path, _: &[u8]| Err(io::Error::other("power cut"));
+        let err = commit_name_with(
+            &w.paths(),
+            plan,
+            GameProcess::NotRunning,
+            ops(&write, &read_file),
+        )
+        .unwrap_err();
         assert!(matches!(err, NamingError::Io(_)), "{err:?}");
     }
 
@@ -1845,24 +2123,27 @@ mod tests {
         }
     }
 
+    /// A staged (downloaded, not yet installed) copy whose plugin.txt is `text`.
+    fn staged(text: Option<&str>) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("staged");
+        fs::create_dir_all(root.join("data")).unwrap();
+        if let Some(text) = text {
+            fs::write(root.join(PLUGIN_TXT), text).unwrap();
+        }
+        (dir, root)
+    }
+
     #[test]
     fn an_update_copy_without_a_name_gets_the_added_name_back() {
-        let dir = tempfile::tempdir().unwrap();
-        let staged = dir.path().join("staged");
-        fs::create_dir_all(staged.join("data")).unwrap();
-        fs::write(staged.join(PLUGIN_TXT), "about \"v2\"\n").unwrap();
+        let (dir, root) = staged(Some("about \"v2\"\n"));
         let backups = dir.path().join("backups");
         let record = record_with_name("020-Foo", Some("Foo"), Some("Foo Expanded"));
-
-        let meta = PluginMeta::parse("about \"v2\"\n");
+        let decision = reapply_decision(Some(&record), Some("Foo Expanded"), &root).unwrap();
+        assert_eq!(decision, Reapply::Write("Foo Expanded".into()));
+        write_name_into_staged(&root, &record, "Foo Expanded", &backups).unwrap();
         assert_eq!(
-            name_to_reapply(Some(&record), &meta).as_deref(),
-            Some("Foo Expanded")
-        );
-        let added = reapply_to_staged(&staged, Some(&record), &backups).unwrap();
-        assert_eq!(added.as_deref(), Some("Foo Expanded"));
-        assert_eq!(
-            fs::read_to_string(staged.join(PLUGIN_TXT)).unwrap(),
+            fs::read_to_string(root.join(PLUGIN_TXT)).unwrap(),
             "name \"Foo Expanded\"\nabout \"v2\"\n"
         );
         // The backup is keyed by the original folder name, not the numbered one.
@@ -1874,40 +2155,299 @@ mod tests {
 
     #[test]
     fn an_update_copy_that_names_itself_keeps_its_own_name() {
-        let dir = tempfile::tempdir().unwrap();
-        let staged = dir.path().join("staged");
-        fs::create_dir_all(staged.join("data")).unwrap();
-        fs::write(staged.join(PLUGIN_TXT), "name \"Upstream\"\n").unwrap();
+        let (_dir, root) = staged(Some("name \"Upstream\"\n"));
         let record = record_with_name("Foo", None, Some("Mine"));
-        let meta = PluginMeta::parse("name \"Upstream\"\n");
-        assert_eq!(name_to_reapply(Some(&record), &meta), None);
-        let added = reapply_to_staged(&staged, Some(&record), dir.path()).unwrap();
-        assert_eq!(added, None);
         assert_eq!(
-            fs::read_to_string(staged.join(PLUGIN_TXT)).unwrap(),
-            "name \"Upstream\"\n"
+            reapply_decision(Some(&record), Some("Mine"), &root).unwrap(),
+            Reapply::Nothing
         );
     }
 
     #[test]
-    fn nothing_is_put_back_for_a_plugin_the_manager_never_named_and_a_blank_line_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        let staged = dir.path().join("staged");
-        fs::create_dir_all(staged.join("data")).unwrap();
+    fn a_name_removed_or_changed_by_hand_is_not_put_back() {
+        let (_dir, root) = staged(Some("about \"v2\"\n"));
+        let record = record_with_name("Foo", None, Some("Mine"));
+        // The user put the backup back (no name), or typed another one by hand.
+        for installed in [None, Some("Something Else")] {
+            assert_eq!(
+                reapply_decision(Some(&record), installed, &root).unwrap(),
+                Reapply::Nothing,
+                "{installed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn nothing_is_put_back_for_a_plugin_the_manager_never_named_and_a_blank_line_cannot_keep_it() {
+        let (_dir, root) = staged(None);
         let plain = record_with_name("Foo", None, None);
         assert_eq!(
-            reapply_to_staged(&staged, Some(&plain), dir.path()).unwrap(),
-            None
+            reapply_decision(Some(&plain), None, &root).unwrap(),
+            Reapply::Nothing
         );
-        assert_eq!(reapply_to_staged(&staged, None, dir.path()).unwrap(), None);
-        assert!(!staged.join(PLUGIN_TXT).exists());
-
-        fs::write(staged.join(PLUGIN_TXT), "name \"\"\n").unwrap();
-        let named = record_with_name("Foo", None, Some("Mine"));
-        assert!(reapply_to_staged(&staged, Some(&named), dir.path()).is_err());
         assert_eq!(
-            fs::read_to_string(staged.join(PLUGIN_TXT)).unwrap(),
-            "name \"\"\n"
+            reapply_decision(None, None, &root).unwrap(),
+            Reapply::Nothing
+        );
+        assert!(!root.join(PLUGIN_TXT).exists());
+
+        let named = record_with_name("Foo", None, Some("Mine"));
+        for blank in ["name \"\"\n", "about \"x\"\nname\n"] {
+            fs::write(root.join(PLUGIN_TXT), blank).unwrap();
+            assert_eq!(
+                reapply_decision(Some(&named), Some("Mine"), &root).unwrap(),
+                Reapply::CannotKeep("Mine".into())
+            );
+            assert_eq!(fs::read_to_string(root.join(PLUGIN_TXT)).unwrap(), blank);
+        }
+    }
+
+    // --- who can be named: links, numbered and odd folders -----------------
+
+    #[test]
+    fn a_numbered_folder_must_be_restored_first() {
+        let w = World::new();
+        w.add("020-Foo", None);
+        let mut records = w.records();
+        records.get_mut("020-Foo").unwrap().original_folder = Some("Foo".into());
+        records::save(&w.records_path, &records).unwrap();
+        let plugin = w.installed().into_iter().next().unwrap();
+        let err = can_name(&w.paths(), &plugin).unwrap_err();
+        assert!(matches!(err, NamingError::RestoreFirst { .. }), "{err:?}");
+        assert!(err.to_string().contains("Restore original names"));
+        assert!(matches!(
+            w.plan("020-Foo", NameChoice::FolderName),
+            Err(NamingError::RestoreFirst { .. })
+        ));
+        // And a plan made before the folder was numbered is refused at commit.
+        let w = World::new();
+        w.add("Foo", None);
+        let plan = w.plan("Foo", NameChoice::FolderName).unwrap();
+        let mut records = w.records();
+        records.get_mut("Foo").unwrap().original_folder = Some("Bar".into());
+        records::save(&w.records_path, &records).unwrap();
+        assert!(matches!(
+            commit_name(&w.paths(), &plan, GameProcess::NotRunning),
+            Err(NamingError::RestoreFirst { .. })
+        ));
+        assert_eq!(w.plugin_txt("Foo"), None);
+    }
+
+    // Unix only: Windows can't have a folder whose name ends in a dot.
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_name_the_load_order_would_not_number_is_refused() {
+        let w = World::new();
+        w.add("Odd.", None);
+        let err = w.plan("Odd.", typed("Odd")).unwrap_err();
+        assert!(matches!(err, NamingError::UnsupportedFolder(_)), "{err:?}");
+        assert!(!folder_can_take_a_number("Odd."));
+        assert!(folder_can_take_a_number("Mega Freight"));
+        assert!(!folder_can_take_a_number(&"x".repeat(252)));
+        assert!(folder_can_take_a_number(&"x".repeat(251)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_plugin_folder_is_never_written_into() {
+        let w = World::new();
+        // Someone's own checkout, linked into plugins/ and linked to the catalog.
+        let checkout = w._dir.path().join("my-checkout");
+        fs::create_dir_all(checkout.join("data")).unwrap();
+        std::os::unix::fs::symlink(&checkout, w.dir("Linked")).unwrap();
+        let mut records = w.records();
+        records.insert("Linked".into(), record_with_name("Linked", None, None));
+        records::save(&w.records_path, &records).unwrap();
+        let plugin = w
+            .installed()
+            .into_iter()
+            .find(|p| p.folder == "Linked")
+            .unwrap();
+        let err = can_name(&w.paths(), &plugin).unwrap_err();
+        assert!(matches!(err, NamingError::Linked(_)), "{err:?}");
+        assert!(matches!(
+            w.plan("Linked", NameChoice::FolderName),
+            Err(NamingError::Linked(_))
+        ));
+
+        // A plan made while it was a real folder is refused once it has become a link.
+        let w2 = World::new();
+        w2.add("Foo", None);
+        let plan = w2.plan("Foo", NameChoice::FolderName).unwrap();
+        fs::rename(w2.dir("Foo"), w2._dir.path().join("moved")).unwrap();
+        std::os::unix::fs::symlink(w2._dir.path().join("moved"), w2.dir("Foo")).unwrap();
+        assert!(matches!(
+            commit_name(&w2.paths(), &plan, GameProcess::NotRunning),
+            Err(NamingError::Linked(_))
+        ));
+        assert!(!w2._dir.path().join("moved").join(PLUGIN_TXT).exists());
+        assert!(!checkout.join(PLUGIN_TXT).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_plugin_txt_is_replaced_and_its_target_left_alone() {
+        let w = World::new();
+        w.add("Foo", None);
+        let elsewhere = w._dir.path().join("shared-plugin.txt");
+        fs::write(&elsewhere, "about \"shared\"\n").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, w.dir("Foo").join(PLUGIN_TXT)).unwrap();
+        w.name("Foo", NameChoice::FolderName);
+        let link = w.dir("Foo").join(PLUGIN_TXT);
+        assert!(
+            !fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            fs::read_to_string(&link).unwrap(),
+            "name \"Foo\"\nabout \"shared\"\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&elsewhere).unwrap(),
+            "about \"shared\"\n"
+        );
+    }
+
+    // --- step 2 reporting a problem: what is on disk decides -----------------
+
+    #[test]
+    fn if_the_check_fails_but_the_name_is_there_the_change_is_finished() {
+        // The write lands, reading it back fails, putting the old file back fails too; reading
+        // it again then works and shows the name.
+        let w = migration_world();
+        let plan = w.plan("Foo", typed("Foo Expanded")).unwrap();
+        let faulty = Faulty::new(None, true, 1);
+        let (write, read) = (
+            |p: &Path, b: &[u8]| faulty.write(p, b),
+            |p: &Path| faulty.read(p),
+        );
+        commit_name_with(
+            &w.paths(),
+            &plan,
+            GameProcess::NotRunning,
+            ops(&write, &read),
+        )
+        .unwrap();
+        assert!(carries_name(&w.plugin_txt("Foo").unwrap(), "Foo Expanded"));
+        assert_eq!(w.states().get("Foo Expanded"), Some(&false));
+        assert_eq!(w.states().get("Foo"), None);
+        assert_eq!(
+            w.records()["Foo"].added_name.as_deref(),
+            Some("Foo Expanded")
+        );
+        assert!(!w.journal_exists());
+    }
+
+    #[test]
+    fn if_the_file_ends_up_without_the_name_the_change_is_undone() {
+        // The write lands mangled and the old file can't be put back: the file is readable and
+        // has no name, so the game still sees the old name; undo step 1.
+        let w = migration_world();
+        let plan = w.plan("Foo", typed("Foo Expanded")).unwrap();
+        let faulty = Faulty::new(Some("about \"mangled\"\n"), true, 0);
+        let (write, read) = (
+            |p: &Path, b: &[u8]| faulty.write(p, b),
+            |p: &Path| faulty.read(p),
+        );
+        let err = commit_name_with(
+            &w.paths(),
+            &plan,
+            GameProcess::NotRunning,
+            ops(&write, &read),
+        )
+        .unwrap_err();
+        assert!(matches!(err, NamingError::ReadBackFailed(_)), "{err:?}");
+        assert_eq!(w.states().get("Foo Expanded"), None);
+        assert_eq!(w.states().get("Foo"), Some(&false));
+        assert!(!w.journal_exists());
+        assert_eq!(w.records()["Foo"].added_name, None);
+    }
+
+    #[test]
+    fn if_the_file_cannot_be_read_at_all_the_journal_is_left_for_recovery() {
+        let w = migration_world();
+        let plan = w.plan("Foo", typed("Foo Expanded")).unwrap();
+        // Every read fails, and so does putting the old file back: no way to tell.
+        let faulty = Faulty::new(None, true, u32::MAX);
+        let (write, read) = (
+            |p: &Path, b: &[u8]| faulty.write(p, b),
+            |p: &Path| faulty.read(p),
+        );
+        let err = commit_name_with(
+            &w.paths(),
+            &plan,
+            GameProcess::NotRunning,
+            ops(&write, &read),
+        )
+        .unwrap_err();
+        assert!(matches!(err, NamingError::Io(_)), "{err:?}");
+        assert!(w.journal_exists(), "left for recover");
+        // The next read of the install sorts it out from what is really on disk.
+        assert_eq!(
+            recover(&w.paths(), GameProcess::NotRunning).unwrap(),
+            NamingRecovery::Finished {
+                folder: "Foo".into(),
+                name: "Foo Expanded".into()
+            }
+        );
+        assert_eq!(w.states().get("Foo Expanded"), Some(&false));
+        assert_eq!(w.states().get("Foo"), None);
+    }
+
+    // --- backups -------------------------------------------------------------
+
+    #[test]
+    fn plugins_txt_is_copied_once_to_its_own_backup_and_the_toggle_backup_is_left_alone() {
+        let w = migration_world();
+        // Make a toggle backup exist, with known contents.
+        w.set_states(&[("Foo", false), ("Dep", true), ("Other", true)]);
+        w.set_states(&[("Foo", false), ("Dep", true)]);
+        let toggle_backup = w.config.join(game_state::BACKUP_FILE);
+        let toggle_before = fs::read(&toggle_backup).unwrap();
+        let states_before = fs::read(w.config.join(game_state::PLUGINS_FILE)).unwrap();
+
+        let plan = w.plan("Foo", typed("Foo Expanded")).unwrap();
+        let expected = w.config.join(PLUGIN_STATES_BACKUP_FILE);
+        assert_eq!(
+            plan.plugin_states_backup.as_deref(),
+            Some(expected.as_path())
+        );
+        let outcome = commit_name(&w.paths(), &plan, GameProcess::NotRunning).unwrap();
+        assert_eq!(
+            outcome.plugin_states_backup.as_deref(),
+            Some(expected.as_path())
+        );
+        assert_eq!(
+            fs::read(&expected).unwrap(),
+            states_before,
+            "the state before step 1"
+        );
+        assert_eq!(
+            fs::read(&toggle_backup).unwrap(),
+            toggle_before,
+            "untouched"
+        );
+
+        // The folder name changes nothing in plugins.txt, so nothing is copied.
+        w.add("Bar", None);
+        let plan = w.plan("Bar", NameChoice::FolderName).unwrap();
+        assert_eq!(plan.plugin_states_backup, None);
+    }
+
+    #[test]
+    fn the_plan_says_when_the_line_goes_at_the_end() {
+        let w = World::new();
+        w.add("Top", Some("about \"x\"\n"));
+        w.add("End", Some("\tabout \"x\"\n"));
+        assert_eq!(
+            w.plan("Top", NameChoice::FolderName).unwrap().position,
+            LinePosition::Top
+        );
+        assert_eq!(
+            w.plan("End", NameChoice::FolderName).unwrap().position,
+            LinePosition::End
         );
     }
 }

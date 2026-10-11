@@ -133,12 +133,19 @@ export function describeNameConsequences(plan: LoadOrderNamePlanView): string[] 
     lines.push(`${which} to the new name: ${plan.profiles.join(", ")}.`);
   }
   lines.push("The manager's own record of it is updated too.");
+  if (plan.pluginsTxtBackup) {
+    lines.push(`plugins.txt (the game's on/off list) is copied first to ${plan.pluginsTxtBackup}.`);
+  }
   return lines;
 }
 
 /** Where the line goes, and the copy kept beforehand, in plain words. */
 export function describeNameWrite(plan: LoadOrderNamePlanView): string {
-  return plan.createsFile
-    ? `It has no plugin.txt yet, so the manager creates one holding just that line, and keeps a note that there was none at ${plan.backup}.`
-    : `The line goes at the top of its plugin.txt; nothing else in the file changes. A copy of the file as it is now is kept at ${plan.backup}.`;
+  if (plan.createsFile) {
+    return `It has no plugin.txt yet, so the manager creates one holding just that line, and keeps a note that there was none at ${plan.backup}.`;
+  }
+  const where = plan.lineAtEnd
+    ? "The line goes at the end of its plugin.txt (its first line is indented, so a line on top would change what the file means)"
+    : "The line goes at the top of its plugin.txt";
+  return `${where}; nothing else in the file changes. A copy of the file as it is now is kept at ${plan.backup}.`;
 }

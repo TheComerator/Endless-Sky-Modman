@@ -195,6 +195,14 @@ pub enum Issue {
         existing_folder: String,
         new_folder: String,
     },
+    /// The manager once added the name `name` to the `plugin.txt` of the plugin in `folder`
+    /// (`plugin_naming`), and the new version about to replace it has a `name` line with nothing
+    /// usable after it, so the name can't be written back. Going ahead installs it without the
+    /// name, so the game would know it by another name.
+    AddedNameCannotBeKept {
+        folder: String,
+        name: String,
+    },
 }
 
 /// Non-blocking information, never forced.

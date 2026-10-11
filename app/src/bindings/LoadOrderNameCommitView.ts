@@ -10,6 +10,10 @@ name: string,
  */
 backup: string, identityChanged: boolean, 
 /**
+ * Where `plugins.txt` was copied before it changed, if it did.
+ */
+pluginsTxtBackup: string | null, 
+/**
  * The game's process list couldn't be read while `plugins.txt` was written.
  */
 gameDetectionFailed: boolean, };

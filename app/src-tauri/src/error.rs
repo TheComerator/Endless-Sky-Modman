@@ -160,6 +160,7 @@ impl From<CommitError> for CmdError {
                 folder,
             },
             CommitError::Uninstall(error) => CmdError::io(format!("Uninstall failed: {error}")),
+            CommitError::Unfinished => CmdError::invalid(e.to_string()),
             CommitError::Io(message) => CmdError::Io { message },
         }
     }
