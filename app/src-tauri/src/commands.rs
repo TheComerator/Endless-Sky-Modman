@@ -403,3 +403,28 @@ pub async fn load_order_commit_restore(
     })
     .await
 }
+
+#[tauri::command]
+pub async fn load_order_plan_name(
+    state: State<'_, AppState>,
+    folder: String,
+    name: Option<String>,
+) -> CmdResult<LoadOrderNamePlanView> {
+    blocking(&state, "load_order_plan_name", move |s| {
+        s.load_order_plan_name(&folder, name)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn load_order_commit_name(
+    state: State<'_, AppState>,
+    folder: String,
+    name: Option<String>,
+    token: String,
+) -> CmdResult<LoadOrderNameCommitView> {
+    blocking(&state, "load_order_commit_name", move |s| {
+        s.load_order_commit_name(&folder, name, &token)
+    })
+    .await
+}

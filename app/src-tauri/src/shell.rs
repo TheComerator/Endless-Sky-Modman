@@ -29,6 +29,7 @@ use esmm_core::manager::{
     self, CommitContext, DisablePlan, EnablePlan, Fetcher, HttpFetcher, InstallPlan,
     InstalledPlugin, PlanContext, PlanStep, UninstallPlan, UpdatePlan,
 };
+use esmm_core::plugin_naming;
 use esmm_core::plugin_state::PluginStates;
 use esmm_core::profiles::{self, ProfileStore};
 use esmm_core::records::{self, InstallRecord, InstallRecords};
@@ -594,6 +595,9 @@ impl Shell {
         let paths = InstallPaths::new(&self.deps.data_dir, &selected.install.config_dir);
         // load order: finish or undo an interrupted renaming run before anything is scanned.
         self.recover_interrupted(&paths);
+        // plugin naming: the same for an interrupted "give it a name" (see
+        // `recover_interrupted_naming` before removing it).
+        self.recover_interrupted_naming(&paths);
         let records = records::load(&paths.records)?;
         let installed = manager::scan_installed(
             &install::plugins_dir(&selected.install.config_dir),
@@ -610,6 +614,29 @@ impl Shell {
             game_version,
         };
         Ok((selected, snapshot))
+    }
+
+    /// Finishes or undoes an interrupted "give it a name" step (the optional load-order
+    /// feature's `plugin_naming`), whether or not that feature is switched on, before any plugin
+    /// folder is read. Kept here rather than in `shell/load_order.rs` on purpose: plugins that
+    /// were given a name still depend on it if the rest of the feature is ever removed (see
+    /// the removal notes in `esmm_core::load_order`).
+    fn recover_interrupted_naming(&self, paths: &InstallPaths) {
+        if !paths
+            .records
+            .with_file_name(plugin_naming::JOURNAL_FILE)
+            .exists()
+        {
+            return;
+        }
+        let game = (self.deps.detect_game)();
+        match plugin_naming::recover(&naming_paths(paths), game) {
+            Ok(plugin_naming::NamingRecovery::Nothing) => {}
+            Ok(done) => tracing::warn!(?done, "dealt with an interrupted plugin naming"),
+            Err(e) => {
+                tracing::warn!(error = %e, "couldn't recover an interrupted plugin naming")
+            }
+        }
     }
 
     /// Everything the main views show, read fresh. Also performs decision B's automatic
@@ -1277,6 +1304,15 @@ impl Shell {
                 .map(|_| ())
                 .ok_or_else(|| CmdError::not_found(format!("No profile named {name:?}.")))
         })
+    }
+}
+
+/// Where the "give it a name" step (`plugin_naming`) finds things for one install.
+fn naming_paths(paths: &InstallPaths) -> plugin_naming::Paths<'_> {
+    plugin_naming::Paths {
+        config_dir: &paths.config_dir,
+        records_path: &paths.records,
+        profiles_path: &paths.profiles,
     }
 }
 

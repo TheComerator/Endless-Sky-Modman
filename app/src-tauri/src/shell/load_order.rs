@@ -13,16 +13,17 @@
 use esmm_core::game_state::{self, GameProcess};
 use esmm_core::install;
 use esmm_core::load_order::{
-    self, ChangePlan, LoadOrderBackend, LoadOrderError, OverlapPlugin, Paths, Recovery,
-    WinnerChange,
+    self, ChangePlan, ExcludeReason, LoadOrderBackend, LoadOrderError, OverlapPlugin, Paths,
+    Recovery, WinnerChange,
 };
 use esmm_core::manager::InstalledPlugin;
 use esmm_core::overlap::{self, PluginIndex};
+use esmm_core::plugin_naming::{self, NameChoice, NamingError, NamingPlan};
 use std::collections::{HashMap, HashSet};
 
 use sha2::{Digest, Sha256};
 
-use super::{Shell, Snapshot, lock};
+use super::{Shell, Snapshot, lock, naming_paths};
 use crate::error::{CmdError, CmdResult};
 use crate::load_order_views::*;
 use crate::settings::{InstallPaths, Settings};
@@ -63,6 +64,54 @@ fn plan_token(plan: &ChangePlan) -> String {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
+}
+
+fn naming_err(e: NamingError) -> CmdError {
+    match e {
+        NamingError::GameRunning => CmdError::GameRunning {
+            message: "Endless Sky is running. Close it first; the manager doesn't change plugins while it runs."
+                .into(),
+        },
+        NamingError::Io(m) => CmdError::io(m),
+        NamingError::Missing(_) => CmdError::not_found(e.to_string()),
+        other => CmdError::invalid(other.to_string()),
+    }
+}
+
+/// A short fingerprint of everything a "Give it a name" review shows, so the commit can check
+/// it is committing what was reviewed.
+fn name_token(plan: &NamingPlan) -> String {
+    let mut hasher = Sha256::new();
+    for part in [
+        plan.folder.as_str(),
+        plan.name.as_str(),
+        plan.old_identity.as_str(),
+        plan.line.as_str(),
+        plan.original_sha256.as_deref().unwrap_or("no plugin.txt"),
+        if plan.enabled { "on" } else { "off" },
+    ] {
+        hasher.update(part.as_bytes());
+        hasher.update([0]);
+    }
+    hasher.update(plan.backup_path.to_string_lossy().as_bytes());
+    for profile in &plan.profiles {
+        hasher.update(format!("profile {profile}\n"));
+    }
+    for d in &plan.dependents {
+        hasher.update(format!("dependent {} {:?}\n", d.plugin, d.relation));
+    }
+    hasher.finalize()[..8]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// `None` from the frontend means "use the folder name" (the dialog's default).
+fn name_choice(name: Option<String>) -> NameChoice {
+    match name {
+        Some(typed) => NameChoice::Typed(typed),
+        None => NameChoice::FolderName,
+    }
 }
 
 fn short_hash(text: &str) -> String {
@@ -155,6 +204,9 @@ impl Shell {
                     reasons: e.reasons.iter().copied().map(Into::into).collect(),
                     still_renamed: e.still_renamed,
                     enabled: enabled(&e.identity),
+                    // Only a missing name stands in its way (no record would show up as
+                    // NotLinkedToCatalog as well), so a name makes it orderable.
+                    can_name: e.reasons == [ExcludeReason::NoPluginName],
                 })
                 .collect(),
             renamed_count,
@@ -290,6 +342,89 @@ impl Shell {
     pub fn load_order_commit_restore(&self, token: &str) -> CmdResult<LoadOrderCommitView> {
         self.load_order_commit(token, false, |backend, snap| {
             backend.plan_restore(&paths_of(&snap.paths), &snap.installed)
+        })
+    }
+
+    /// "Give it a name": what adding a name to the `plugin.txt` of the plugin in `folder` would
+    /// write and change (`name` is what the user typed; `None` means its folder name). Changes
+    /// nothing. See `esmm_core::plugin_naming`.
+    pub fn load_order_plan_name(
+        &self,
+        folder: &str,
+        name: Option<String>,
+    ) -> CmdResult<LoadOrderNamePlanView> {
+        self.require_load_order()?;
+        let _op = lock(&self.op_lock);
+        let (_, snap) = self.snapshot()?;
+        let plan = plugin_naming::plan_name(
+            &naming_paths(&snap.paths),
+            &snap.installed,
+            &snap.states,
+            folder,
+            &name_choice(name),
+        )
+        .map_err(naming_err)?;
+        tracing::info!(
+            folder,
+            identity_changes = plan.identity_changes(),
+            "plugin naming planned"
+        );
+        let token = name_token(&plan);
+        Ok(LoadOrderNamePlanView::new(&plan, token))
+    }
+
+    /// Writes the name reviewed with `token`, after planning it again from disk and checking
+    /// that nothing changed in between.
+    pub fn load_order_commit_name(
+        &self,
+        folder: &str,
+        name: Option<String>,
+        token: &str,
+    ) -> CmdResult<LoadOrderNameCommitView> {
+        let _op = lock(&self.op_lock);
+        self.require_load_order()?;
+        let game = (self.deps.detect_game)();
+        if game == GameProcess::Running {
+            return Err(CmdError::game_running());
+        }
+        let (_, snap) = self.snapshot()?;
+        let paths = naming_paths(&snap.paths);
+        let plan = plugin_naming::plan_name(
+            &paths,
+            &snap.installed,
+            &snap.states,
+            folder,
+            &name_choice(name),
+        )
+        .map_err(naming_err)?;
+        if name_token(&plan) != token {
+            return Err(CmdError::invalid(
+                "The plugin or its settings changed since you reviewed this. Review it again.",
+            ));
+        }
+        let result = plugin_naming::commit_name(&paths, &plan, game);
+        // The plugin may now go by another name, so a plan waiting in the main flow could be
+        // about the old one: drop it unless the commit was refused before anything was written.
+        let touched = !matches!(
+            &result,
+            Err(NamingError::GameRunning
+                | NamingError::Busy
+                | NamingError::Missing(_)
+                | NamingError::Changed(_)
+                | NamingError::NotLinked(_))
+        );
+        if touched {
+            self.reset_plans();
+        }
+        let outcome = result.map_err(|e| {
+            tracing::error!(error = %e, "plugin naming failed");
+            naming_err(e)
+        })?;
+        Ok(LoadOrderNameCommitView {
+            name: plan.name.clone(),
+            backup: outcome.backup_path.display().to_string(),
+            identity_changed: plan.identity_changes(),
+            game_detection_failed: outcome.game_detection_failed,
         })
     }
 
@@ -787,6 +922,242 @@ mod tests {
         ));
     }
 
+    // --- "Give it a name" ---------------------------------------------------
+
+    impl World {
+        /// A plugin folder the manager has no record of.
+        fn add_unlinked(&self, folder: &str) {
+            fs::create_dir_all(self.plugins().join(folder).join("data")).unwrap();
+        }
+
+        fn plugin_txt(&self, folder: &str) -> Option<String> {
+            fs::read_to_string(self.plugins().join(folder).join("plugin.txt")).ok()
+        }
+
+        fn states(&self) -> esmm_core::plugin_state::PluginStates {
+            game_state::read_plugin_states(&self.config).unwrap()
+        }
+
+        fn excluded(&self, folder: &str) -> LoadOrderExcludedView {
+            self.shell
+                .load_order_state()
+                .unwrap()
+                .excluded
+                .into_iter()
+                .find(|e| e.folder == folder)
+                .unwrap()
+        }
+    }
+
+    #[test]
+    fn only_plugins_whose_one_problem_is_a_missing_name_are_offered_a_name() {
+        let w = World::new();
+        w.add("Anon", None);
+        w.add_by_hand("Hand", None);
+        w.add_unlinked("Loose");
+        w.shell.load_order_set_enabled(true).unwrap();
+        assert!(w.excluded("Anon").can_name);
+        assert!(
+            w.excluded("Hand").can_name,
+            "hand-added but linked to the catalog"
+        );
+        let loose = w.excluded("Loose");
+        assert!(!loose.can_name);
+        assert_eq!(
+            loose.reasons,
+            [
+                LoadOrderExcludeReason::NotLinkedToCatalog,
+                LoadOrderExcludeReason::NoPluginName
+            ]
+        );
+        // And the backend refuses it too, whatever the page shows.
+        assert!(matches!(
+            w.shell.load_order_plan_name("Loose", None),
+            Err(CmdError::Invalid { .. })
+        ));
+    }
+
+    #[test]
+    fn the_folder_name_makes_a_plugin_orderable_and_restore_keeps_its_identity() {
+        let w = World::new();
+        w.add("Alpha", Some("Alpha P"));
+        w.add("Anon", None);
+        w.shell.load_order_set_enabled(true).unwrap();
+
+        let plan = w.shell.load_order_plan_name("Anon", None).unwrap();
+        assert_eq!(plan.name, "Anon");
+        assert_eq!(plan.line, "name \"Anon\"");
+        assert!(plan.creates_file && !plan.identity_changes);
+        assert_eq!(w.plugin_txt("Anon"), None, "reviewing writes nothing");
+        let done = w
+            .shell
+            .load_order_commit_name("Anon", None, &plan.token)
+            .unwrap();
+        assert_eq!(done.name, "Anon");
+        assert!(!done.identity_changed);
+        assert_eq!(w.plugin_txt("Anon").as_deref(), Some("name \"Anon\"\n"));
+        assert!(
+            Path::new(&done.backup).starts_with(w.paths().records.parent().unwrap()),
+            "the backup is in the manager's own folder: {}",
+            done.backup
+        );
+
+        // Now it is part of the order.
+        let state = w.shell.load_order_state().unwrap();
+        assert!(state.excluded.is_empty());
+        let wanted = strs(&["Anon", "Alpha"]);
+        let plan = w.shell.load_order_plan_apply(wanted.clone()).unwrap();
+        w.shell
+            .load_order_commit_apply(wanted, &plan.token)
+            .unwrap();
+        assert_eq!(w.folders(), ["010-Anon", "020-Alpha"]);
+        let mut identities: Vec<String> = w
+            .shell
+            .get_state()
+            .unwrap()
+            .plugins
+            .into_iter()
+            .map(|p| p.identity)
+            .collect();
+        identities.sort();
+        assert_eq!(identities, ["Alpha P", "Anon"]);
+
+        let restore = w.shell.load_order_plan_restore().unwrap();
+        assert!(restore.identity_changes.is_empty());
+        w.shell.load_order_commit_restore(&restore.token).unwrap();
+        assert_eq!(w.folders(), ["Alpha", "Anon"]);
+        assert_eq!(w.plugin_txt("Anon").as_deref(), Some("name \"Anon\"\n"));
+    }
+
+    #[test]
+    fn a_typed_name_is_reviewed_and_a_switched_off_plugin_stays_off() {
+        let w = World::new();
+        w.add("Anon", None);
+        w.add("Dep", Some("Dep"));
+        fs::write(
+            w.plugins().join("Dep/plugin.txt"),
+            "name \"Dep\"\ndependencies\n\trequires\n\t\tAnon\n",
+        )
+        .unwrap();
+        game_state::write_plugin_states(
+            &w.config,
+            &[("Anon".to_string(), false)].into(),
+            GameProcess::NotRunning,
+        )
+        .unwrap();
+        w.shell.load_order_set_enabled(true).unwrap();
+
+        let plan = w
+            .shell
+            .load_order_plan_name("Anon", Some("  Anon Deluxe ".into()))
+            .unwrap();
+        assert_eq!(plan.name, "Anon Deluxe");
+        assert!(plan.identity_changes && !plan.enabled);
+        assert_eq!(
+            plan.dependents,
+            [LoadOrderNameDependent {
+                plugin: "Dep".into(),
+                relation: LoadOrderNameRelation::Requires
+            }]
+        );
+        // A name another plugin already has is refused with a reason.
+        let err = w
+            .shell
+            .load_order_plan_name("Anon", Some("Dep".into()))
+            .unwrap_err();
+        assert!(err.message().contains("already called that"), "{err:?}");
+
+        w.shell
+            .load_order_commit_name("Anon", Some("  Anon Deluxe ".into()), &plan.token)
+            .unwrap();
+        let states = w.states();
+        assert_eq!(states.get("Anon Deluxe"), Some(&false));
+        assert_eq!(states.get("Anon"), None);
+        let records = records::load(&w.paths().records).unwrap();
+        assert_eq!(records["Anon"].identity, "Anon Deluxe");
+        assert_eq!(records["Anon"].added_name.as_deref(), Some("Anon Deluxe"));
+    }
+
+    #[test]
+    fn a_stale_review_a_running_game_or_the_switch_off_writes_nothing() {
+        let w = World::new();
+        w.add("Anon", None);
+        w.shell.load_order_set_enabled(true).unwrap();
+        let plan = w.shell.load_order_plan_name("Anon", None).unwrap();
+
+        // Committing a different choice than the one reviewed.
+        let err = w
+            .shell
+            .load_order_commit_name("Anon", Some("Other".into()), &plan.token)
+            .unwrap_err();
+        assert!(matches!(err, CmdError::Invalid { .. }), "{err:?}");
+        // The plugin changed after the review.
+        fs::write(w.plugins().join("Anon/plugin.txt"), "about \"x\"\n").unwrap();
+        let err = w
+            .shell
+            .load_order_commit_name("Anon", None, &plan.token)
+            .unwrap_err();
+        assert!(matches!(err, CmdError::Invalid { .. }), "{err:?}");
+        assert_eq!(w.plugin_txt("Anon").as_deref(), Some("about \"x\"\n"));
+
+        let plan = w.shell.load_order_plan_name("Anon", None).unwrap();
+        GAME_RUNNING.with(|g| g.set(true));
+        let err = w
+            .shell
+            .load_order_commit_name("Anon", None, &plan.token)
+            .unwrap_err();
+        assert!(matches!(err, CmdError::GameRunning { .. }), "{err:?}");
+        GAME_RUNNING.with(|g| g.set(false));
+
+        w.shell.load_order_set_enabled(false).unwrap();
+        for result in [
+            w.shell.load_order_plan_name("Anon", None).map(|_| ()),
+            w.shell
+                .load_order_commit_name("Anon", None, &plan.token)
+                .map(|_| ()),
+        ] {
+            assert!(
+                matches!(result, Err(CmdError::Invalid { .. })),
+                "{result:?}"
+            );
+        }
+        assert_eq!(w.plugin_txt("Anon").as_deref(), Some("about \"x\"\n"));
+    }
+
+    #[test]
+    fn a_blank_name_line_is_explained_instead_of_guessed_at() {
+        let w = World::new();
+        w.add("Anon", None);
+        fs::write(w.plugins().join("Anon/plugin.txt"), "name \"\"\n").unwrap();
+        w.shell.load_order_set_enabled(true).unwrap();
+        let err = w.shell.load_order_plan_name("Anon", None).unwrap_err();
+        assert!(matches!(err, CmdError::Invalid { .. }));
+        assert!(err.message().contains("by hand"), "{err:?}");
+    }
+
+    #[test]
+    fn an_interrupted_naming_is_finished_before_the_plugins_are_read() {
+        let w = World::new();
+        w.add("Anon", None);
+        // A crash right after the name was written: journal on disk, records not updated.
+        let journal = w
+            .paths()
+            .records
+            .with_file_name(plugin_naming::JOURNAL_FILE);
+        fs::write(
+            &journal,
+            r#"{"format":1,"folder":"Anon","name":"Anon","old_identity":"Anon","new_entry_before":null}"#,
+        )
+        .unwrap();
+        fs::write(w.plugins().join("Anon/plugin.txt"), "name \"Anon\"\n").unwrap();
+
+        // The switch is off: recovery runs anyway.
+        w.shell.get_state().unwrap();
+        assert!(!journal.exists());
+        let records = records::load(&w.paths().records).unwrap();
+        assert_eq!(records["Anon"].added_name.as_deref(), Some("Anon"));
+    }
+
     mod ipc {
         use tauri::Manager;
         use tauri::ipc::{CallbackFn, InvokeBody};
@@ -903,6 +1274,115 @@ mod tests {
             )
             .unwrap_err();
             assert!(err.as_str().is_some_and(|e| e.contains("wanted")), "{err}");
+            drop(dir);
+        }
+
+        /// "Give it a name": argument names and payload shapes as the frontend uses them.
+        #[test]
+        fn naming_commands_through_ipc() {
+            let w = World::new();
+            w.add("Anon", None);
+            let plugins = w.plugins();
+            let app = crate::with_commands(mock_builder())
+                .build(mock_context(noop_assets()))
+                .unwrap();
+            let dir = w._dir;
+            app.manage(AppState::new(w.shell));
+            let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+                .build()
+                .unwrap();
+            let call = |cmd: &str, args: serde_json::Value| invoke(&webview, cmd, args);
+
+            call(
+                "load_order_set_enabled",
+                serde_json::json!({"enabled": true}),
+            )
+            .unwrap();
+            let state = call("load_order_state", serde_json::json!({})).unwrap();
+            assert_eq!(state["excluded"][0]["folder"], "Anon");
+            assert_eq!(state["excluded"][0]["canName"], true);
+
+            let typed = call(
+                "load_order_plan_name",
+                serde_json::json!({"folder": "Anon", "name": "Anon Deluxe"}),
+            )
+            .unwrap();
+            assert_eq!(typed["identityChanges"], true);
+            assert_eq!(typed["oldIdentity"], "Anon");
+            assert_eq!(typed["name"], "Anon Deluxe");
+
+            let plan = call(
+                "load_order_plan_name",
+                serde_json::json!({"folder": "Anon", "name": null}),
+            )
+            .unwrap();
+            let mut keys: Vec<&str> = plan
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort();
+            assert_eq!(
+                keys,
+                [
+                    "backup",
+                    "createsFile",
+                    "dependents",
+                    "enabled",
+                    "folder",
+                    "identityChanges",
+                    "line",
+                    "name",
+                    "oldIdentity",
+                    "profiles",
+                    "token"
+                ]
+            );
+            assert_eq!(plan["line"], "name \"Anon\"");
+            let token = plan["token"].as_str().unwrap().to_string();
+
+            let err = call(
+                "load_order_commit_name",
+                serde_json::json!({"folder": "Anon", "name": null, "token": "stale"}),
+            )
+            .unwrap_err();
+            assert_eq!(err["kind"], "invalid");
+
+            let done = call(
+                "load_order_commit_name",
+                serde_json::json!({"folder": "Anon", "name": null, "token": token}),
+            )
+            .unwrap();
+            assert_eq!(done["name"], "Anon");
+            assert_eq!(done["identityChanged"], false);
+            assert_eq!(done["gameDetectionFailed"], false);
+            assert!(
+                done["backup"]
+                    .as_str()
+                    .unwrap()
+                    .contains("plugin-txt-backups")
+            );
+            assert_eq!(
+                fs::read_to_string(plugins.join("Anon/plugin.txt")).unwrap(),
+                "name \"Anon\"\n"
+            );
+
+            let err = call(
+                "load_order_commit_name",
+                serde_json::json!({"folder": "Anon", "token": "x"}),
+            )
+            .unwrap_err();
+            assert_eq!(
+                err["kind"], "invalid",
+                "a missing name means the folder name"
+            );
+            let err = call(
+                "load_order_plan_name",
+                serde_json::json!({"plugin": "Anon"}),
+            )
+            .unwrap_err();
+            assert!(err.as_str().is_some_and(|e| e.contains("folder")), "{err}");
             drop(dir);
         }
     }
