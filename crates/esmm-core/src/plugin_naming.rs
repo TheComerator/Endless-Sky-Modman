@@ -1147,27 +1147,30 @@ pub enum Reapply {
 /// Decides what to do about a name the manager added, before a downloaded copy (`staged_root`,
 /// still in staging) replaces a plugin. `record` is the plugin's record and `installed_name` the
 /// `name` in the `plugin.txt` of the copy being replaced, right now. Planning and the commit both
-/// ask this, so a plan never expects something the commit won't do. Reads only.
+/// ask this, so a plan never expects something the commit won't do. Reads only, and never fails.
 pub fn reapply_decision(
     record: Option<&InstallRecord>,
     installed_name: Option<&str>,
     staged_root: &Path,
-) -> Result<Reapply, NamingError> {
+) -> Reapply {
     let Some(name) = record.and_then(|r| r.added_name.as_deref()) else {
-        return Ok(Reapply::Nothing);
+        return Reapply::Nothing;
     };
     // Removed or changed by hand (or the backup put back): respect it.
     if installed_name != Some(name) {
-        return Ok(Reapply::Nothing);
+        return Reapply::Nothing;
     }
-    let staged = read_plugin_txt(staged_root)?;
-    Ok(
-        match naming_of_bytes(staged.as_deref(), "the new version")? {
-            Naming::Named(_) => Reapply::Nothing,
-            Naming::BlankNameLine => Reapply::CannotKeep(name.to_string()),
-            Naming::NoFile | Naming::NoName => Reapply::Write(name.to_string()),
-        },
-    )
+    // A new copy whose plugin.txt can't be read (or isn't UTF-8) is treated like one with a
+    // blank `name` line: the name can't be put back. Planning reports that as a blocking
+    // problem, and the commit, asking the same function, then installs it without the name;
+    // the two never disagree.
+    match read_plugin_txt(staged_root)
+        .and_then(|staged| naming_of_bytes(staged.as_deref(), "the new version"))
+    {
+        Ok(Naming::Named(_)) => Reapply::Nothing,
+        Ok(Naming::NoFile | Naming::NoName) => Reapply::Write(name.to_string()),
+        Ok(Naming::BlankNameLine) | Err(_) => Reapply::CannotKeep(name.to_string()),
+    }
 }
 
 /// Carries out [`Reapply::Write`]: keeps a copy of the new version's `plugin.txt` as it came (the
@@ -2139,7 +2142,7 @@ mod tests {
         let (dir, root) = staged(Some("about \"v2\"\n"));
         let backups = dir.path().join("backups");
         let record = record_with_name("020-Foo", Some("Foo"), Some("Foo Expanded"));
-        let decision = reapply_decision(Some(&record), Some("Foo Expanded"), &root).unwrap();
+        let decision = reapply_decision(Some(&record), Some("Foo Expanded"), &root);
         assert_eq!(decision, Reapply::Write("Foo Expanded".into()));
         write_name_into_staged(&root, &record, "Foo Expanded", &backups).unwrap();
         assert_eq!(
@@ -2158,8 +2161,21 @@ mod tests {
         let (_dir, root) = staged(Some("name \"Upstream\"\n"));
         let record = record_with_name("Foo", None, Some("Mine"));
         assert_eq!(
-            reapply_decision(Some(&record), Some("Mine"), &root).unwrap(),
+            reapply_decision(Some(&record), Some("Mine"), &root),
             Reapply::Nothing
+        );
+    }
+
+    #[test]
+    fn an_unreadable_new_plugin_txt_means_the_name_cannot_be_kept_for_planning_and_commit_alike() {
+        // Not UTF-8. (The downloader itself rejects such a file today, so this guards the rule,
+        // not a path users can reach.)
+        let (_dir, root) = staged(None);
+        fs::write(root.join(PLUGIN_TXT), b"about \"\xff\xfe\"\n").unwrap();
+        let record = record_with_name("Foo", None, Some("Mine"));
+        assert_eq!(
+            reapply_decision(Some(&record), Some("Mine"), &root),
+            Reapply::CannotKeep("Mine".into())
         );
     }
 
@@ -2170,7 +2186,7 @@ mod tests {
         // The user put the backup back (no name), or typed another one by hand.
         for installed in [None, Some("Something Else")] {
             assert_eq!(
-                reapply_decision(Some(&record), installed, &root).unwrap(),
+                reapply_decision(Some(&record), installed, &root),
                 Reapply::Nothing,
                 "{installed:?}"
             );
@@ -2182,20 +2198,17 @@ mod tests {
         let (_dir, root) = staged(None);
         let plain = record_with_name("Foo", None, None);
         assert_eq!(
-            reapply_decision(Some(&plain), None, &root).unwrap(),
+            reapply_decision(Some(&plain), None, &root),
             Reapply::Nothing
         );
-        assert_eq!(
-            reapply_decision(None, None, &root).unwrap(),
-            Reapply::Nothing
-        );
+        assert_eq!(reapply_decision(None, None, &root), Reapply::Nothing);
         assert!(!root.join(PLUGIN_TXT).exists());
 
         let named = record_with_name("Foo", None, Some("Mine"));
         for blank in ["name \"\"\n", "about \"x\"\nname\n"] {
             fs::write(root.join(PLUGIN_TXT), blank).unwrap();
             assert_eq!(
-                reapply_decision(Some(&named), Some("Mine"), &root).unwrap(),
+                reapply_decision(Some(&named), Some("Mine"), &root),
                 Reapply::CannotKeep("Mine".into())
             );
             assert_eq!(fs::read_to_string(root.join(PLUGIN_TXT)).unwrap(), blank);

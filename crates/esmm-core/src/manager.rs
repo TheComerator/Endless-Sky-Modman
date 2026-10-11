@@ -154,6 +154,10 @@ pub struct StagedPlugin {
     pub version: String,
     pub source_url: String,
     pub sha256: String,
+    /// `Some(on/off)` when this copy replaces a plugin that is already installed (only a direct
+    /// install of an installed catalog entry, see `stage_for_install`): like an update, it keeps
+    /// that plugin's current on/off setting instead of being switched on.
+    keeps_state: Option<bool>,
     /// Plugin naming (see `put_back_added_names`): set by the commit when it is about to write a
     /// name the manager added back into this copy (the record it belongs to, and the name).
     name_to_write: Option<(InstallRecord, String)>,
@@ -190,6 +194,7 @@ fn stage_download(ctx: &PlanContext, entry: &CatalogEntry) -> Result<StagedPlugi
         version: entry.version.clone(),
         source_url: entry.url.clone(),
         sha256: downloaded.sha256,
+        keeps_state: None,
         name_to_write: None,
         added_name: None,
     })
@@ -209,9 +214,10 @@ fn installed_copy_of<'a>(ctx: &'a PlanContext, catalog_name: &str) -> Option<&'a
 }
 
 /// [`stage_download`] for the plugin an install was asked for. If that catalog entry is already
-/// installed (the shell refuses this and offers an update instead, but the core must not rely on
-/// it), the copy replaces the installed folder, as an update does, never a second copy beside
-/// it; then a name the manager added is expected back, as for an update.
+/// installed (the shell refuses this and offers an update instead, decision K, but the core must
+/// not rely on it), the copy replaces the installed folder, as an update does: never a second
+/// copy beside it, the plugin's on/off setting is kept rather than switched on, and a name the
+/// manager added is expected back.
 fn stage_for_install(
     ctx: &PlanContext,
     entry: &CatalogEntry,
@@ -223,6 +229,10 @@ fn stage_for_install(
     {
         staged.folder = existing.folder.clone();
         staged.identity = staged.meta.identity(&staged.folder).to_string();
+        staged.keeps_state = Some(game_state::effective_enabled(
+            ctx.states,
+            &existing.identity,
+        ));
     }
     // Plugin naming: a name the manager added is expected back, as for an update.
     let issue = existing
@@ -435,9 +445,20 @@ fn finalize_plan(ctx: &PlanContext, steps: Vec<PlanStep>, mut issues: Vec<Issue>
             PlanStep::Install(_) => {}
         }
     }
+    // A copy that replaces an installed plugin stands in for it in the resulting state.
+    let replaced: HashSet<&str> = steps
+        .iter()
+        .filter_map(|step| match step {
+            PlanStep::Install(staged) if staged.keeps_state.is_some() => {
+                Some(staged.folder.as_str())
+            }
+            _ => None,
+        })
+        .collect();
     let mut planned: Vec<PlannedPlugin> = ctx
         .installed
         .iter()
+        .filter(|p| !replaced.contains(p.folder.as_str()))
         .map(|p| {
             let enabled = forced
                 .get(p.identity.as_str())
@@ -455,6 +476,7 @@ fn finalize_plan(ctx: &PlanContext, steps: Vec<PlanStep>, mut issues: Vec<Issue>
             let enabled = forced
                 .get(staged.identity.as_str())
                 .copied()
+                .or(staged.keeps_state)
                 .unwrap_or(true);
             planned.push(PlannedPlugin {
                 identity: &staged.identity,
@@ -915,18 +937,13 @@ fn expect_added_name(
         name,
     };
     match plugin_naming::reapply_decision(record, installed_name, &staged.root) {
-        Ok(Reapply::Nothing) => None,
-        Ok(Reapply::Write(name)) => {
+        Reapply::Nothing => None,
+        Reapply::Write(name) => {
             staged.identity = name.clone();
             staged.meta.name = Some(name);
             None
         }
-        Ok(Reapply::CannotKeep(name)) => Some(cannot_keep(name)),
-        Err(_) => Some(cannot_keep(
-            record
-                .and_then(|r| r.added_name.clone())
-                .unwrap_or_default(),
-        )),
+        Reapply::CannotKeep(name) => Some(cannot_keep(name)),
     }
 }
 
@@ -995,11 +1012,10 @@ fn decide_added_name(
     };
     let naming_err = |e: plugin_naming::NamingError| CommitError::Io(e.to_string());
     let installed_name = plugin_naming::current_name(&replaced).map_err(naming_err)?;
-    // `CannotKeep` was a blocking problem when this was planned, so getting here means the user
-    // chose to go ahead without the name.
+    // `CannotKeep` was a blocking problem when this was planned (the same function decided
+    // it), so getting here means the user chose to go ahead without the name.
     if let Reapply::Write(name) =
         plugin_naming::reapply_decision(Some(record), installed_name.as_deref(), &staged.root)
-            .map_err(naming_err)?
     {
         staged.name_to_write = Some((record.clone(), name));
     }
@@ -1310,7 +1326,11 @@ fn commit_inner(
             PlanStep::Install(staged) => {
                 match install::install(&staged.root, &plugins_dir, &tmp_dir, &staged.folder) {
                     Ok(result) => {
-                        to_enable.push(result.identity().to_string());
+                        // A fresh install is switched on; a copy that replaced an installed
+                        // plugin keeps that plugin's setting, as an update does.
+                        if staged.keeps_state.is_none() {
+                            to_enable.push(result.identity().to_string());
+                        }
                         new_records.push(InstallRecord {
                             catalog_name: staged.catalog_name,
                             folder: staged.folder,

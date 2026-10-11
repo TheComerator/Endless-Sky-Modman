@@ -469,3 +469,33 @@ fn a_plugin_whose_name_was_taken_out_after_numbering_must_be_restored_before_nam
     w.name("Foo", NameChoice::FolderName);
     assert_eq!(w.identity_of("Foo"), "Foo");
 }
+
+#[test]
+fn a_direct_install_of_an_installed_plugin_replaces_it_and_keeps_it_switched_off() {
+    // The app refuses this ("update it instead"); the core must still never add a second copy
+    // or switch a plugin on behind the user's back.
+    let w = renamed_and_numbered();
+    let foo = w.catalog.iter().find(|e| e.name == "Foo").unwrap().clone();
+    let plan = w.with_ctx(|ctx| manager::plan_install(&foo, ctx));
+    assert_eq!(plan.issues, Vec::<Issue>::new());
+    let folders: Vec<&str> = plan
+        .steps
+        .iter()
+        .filter_map(|s| match s {
+            PlanStep::Install(staged) => Some(staged.folder.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(folders, ["020-Foo"], "into the folder it is already in");
+    manager::commit(plan, &w.commit_ctx(), false).unwrap();
+    assert_eq!(w.folders(), ["010-Bar", "020-Foo"]);
+    assert_eq!(w.states().get("Foo Deluxe"), Some(&false), "still off");
+    assert_eq!(w.states().get("Foo"), None);
+    assert_eq!(w.identity_of("020-Foo"), "Foo Deluxe");
+    let records = w.records();
+    assert_eq!(
+        records.values().filter(|r| r.catalog_name == "Foo").count(),
+        1
+    );
+    assert_eq!(records["020-Foo"].added_name.as_deref(), Some("Foo Deluxe"));
+}
