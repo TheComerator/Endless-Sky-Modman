@@ -33,41 +33,36 @@
 //!
 //! # How to remove this feature
 //!
+//! The optional feature has two parts: **the load order** (this file: numbering folders, the
+//! Load order page) and **giving a plugin a name** (`plugin_naming.rs`, offered on that page).
 //! Callers only use this module through [`LoadOrderBackend`] (and the plain data types next to
-//! it), so removing the feature means deleting the files below and the one-line registrations
-//! listed after them. Run "Restore original names" first if any plugin is still renamed.
+//! it). Run "Restore original names" first if any plugin is still renamed.
 //!
-//! **First, plugins that were given a name.** The "give it a name" step (`plugin_naming`)
-//! writes a `name` line into a plugin's `plugin.txt` and records it as `added_name` in
-//! `records.json`; every update writes it back. If any record in that file has an `added_name`,
-//! keep `crates/esmm-core/src/plugin_naming.rs`, its line in `lib.rs`, its two hooks in
-//! `manager.rs` (`expect_added_name` and `put_back_added_names`, with their calls) and the
-//! `recover_interrupted_naming` call in `app/src-tauri/src/shell.rs`, and do not remove the
-//! `crate::files::plugin_folders_lock` function; otherwise those plugins would silently lose
-//! their name (and so their on/off setting and profile entries) at their next update. They work
-//! without everything else listed here. (The names stay in the plugins' `plugin.txt` files;
-//! copies of the files as they were are in `plugin-txt-backups/` beside `records.json`.)
+//! **Before removing the naming part, look in `records.json`.** If any record has an
+//! `added_name`, the manager wrote a name into that plugin's `plugin.txt`, and every update
+//! writes it back; without the naming part's core (list N1 below) the next update would
+//! silently drop the name, and with it the plugin's on/off setting and profile entries. So:
+//! while any record has an `added_name`, remove only the load order (case 1). The names stay in
+//! the plugins' `plugin.txt` files; copies of the files as they were are in
+//! `plugin-txt-backups/` beside `records.json`.
 //!
-//! Files to delete:
-//! * `crates/esmm-core/src/load_order.rs` (this file) and `crates/esmm-core/tests/load_order.rs`
-//! * `crates/esmm-core/src/plugin_naming.rs` and `crates/esmm-core/tests/plugin_naming.rs`
-//!   (only if no record has an `added_name`, see above)
-//! * `app/src-tauri/src/shell/load_order.rs` and `app/src-tauri/src/load_order_views.rs`
-//! * `app/src/views/LoadOrderView.tsx`, `app/src/hooks/useLoadOrder.ts`, `app/src/loadOrder.ts`
-//!   and `app/src/loadOrder.test.ts`
-//! * `app/src/bindings/LoadOrder*.ts` (generated; `cargo test` no longer writes them)
+//! **Case 1, remove the load order only** (the naming part's core keeps working for updates,
+//! without any page): delete list L.
+//! **Case 2, remove the naming part only** (keep the load order): delete lists N1 and N2.
+//! **Case 3, remove both:** delete lists L and N1 (N2 is inside L's files).
 //!
-//! Lines to remove (most are marked `load order` or `load_order` where they appear):
-//! * `crates/esmm-core/src/lib.rs`: `pub mod load_order;` (and `pub mod plugin_naming;`, if
-//!   it goes)
-//! * `crates/esmm-core/src/manager.rs`, only if `plugin_naming.rs` goes: the
-//!   `use crate::plugin_naming;` line, `expect_added_name` and `put_back_added_names` /
-//!   `put_back_added_name` / `load_records` with every call to them, and the `added_name` field
-//!   of `StagedPlugin` (records then get `added_name: None`)
-//! * `app/src-tauri/src/lib.rs`: `mod load_order_views;` and the `commands::load_order_*` entries
+//! **List L, the load order and its page** (most lines are marked `load order` or
+//! `load_order` where they appear):
+//! * Files: `crates/esmm-core/src/load_order.rs` (this file), `crates/esmm-core/tests/load_order.rs`,
+//!   `crates/esmm-core/tests/load_order_naming.rs`, `app/src-tauri/src/shell/load_order.rs`,
+//!   `app/src-tauri/src/load_order_views.rs`, `app/src/views/LoadOrderView.tsx`,
+//!   `app/src/hooks/useLoadOrder.ts`, `app/src/loadOrder.ts`, `app/src/loadOrder.test.ts`, and
+//!   the generated `app/src/bindings/LoadOrder*.ts` (`cargo test` no longer writes them).
+//! * `crates/esmm-core/src/lib.rs`: `pub mod load_order;`
+//! * `app/src-tauri/src/lib.rs`: `mod load_order_views;` and every `commands::load_order_*`
+//!   entry
 //! * `app/src-tauri/src/shell.rs`: the `// load order` comment and `mod load_order;`, and the
-//!   `recover_interrupted` call (with its comment) in `snapshot`; also the
-//!   `recover_interrupted_naming` call and function, only if `plugin_naming.rs` goes
+//!   `recover_interrupted` call (with its comment) in `snapshot`
 //! * `app/src-tauri/src/commands.rs`: the `use crate::load_order_views::*;` line and the "Load
 //!   order" block of command wrappers at the end of the file
 //! * `app/src-tauri/src/settings.rs`: the `manage_load_order` field, the test
@@ -79,24 +74,64 @@
 //!   `loadOrder` page render and the `loadOrder` prop passed to `SettingsView`
 //! * `app/src/views/SettingsView.tsx`: the imports, the `loadOrder` prop (and its type) and
 //!   `<LoadOrderSettings .../>`
-//! * `app/src/api.ts`: the `LoadOrder*` type imports and the `loadOrder*` entries
-//! * `app/src/styles.css`: the "Load order" block at the end
+//! * `app/src/api.ts`: the `LoadOrder*` type imports and every `loadOrder*` entry
+//! * `app/src/styles.css`: the three "Load order" blocks at the end
 //!
-//! Then run `cargo fmt` (deleting the lines above leaves a stray blank line in `shell.rs`) and
-//! delete the empty `app/src-tauri/src/shell/` folder. This was checked in a throwaway copy:
-//! with exactly these steps `cargo fmt --check`, `cargo clippy --all-targets`,
-//! `cargo test --workspace`, `npm run build` and `npm test` all pass. (Checked before the
-//! "give it a name" step was added; the lines added for it above have not been re-checked
-//! that way.)
+//! **List N1, the naming part's core** (all of it is needed for updates while any record has an
+//! `added_name`):
+//! * Files: `crates/esmm-core/src/plugin_naming.rs`, `crates/esmm-core/tests/plugin_naming.rs`
+//! * `crates/esmm-core/src/lib.rs`: `pub mod plugin_naming;`
+//! * `crates/esmm-core/src/manager.rs` (every piece is commented "plugin naming"): the
+//!   `use crate::plugin_naming::...` line; `expect_added_name` and its two calls (in
+//!   `stage_for_install`, which then returns no issue, and in `plan_update`, with
+//!   `naming_issue`); `decide_added_names`, `decide_added_name`, `write_added_names`,
+//!   `write_added_name` and every call to them; the `name_to_write` and `added_name` fields of
+//!   `StagedPlugin` (records are then built with `added_name: None`)
+//! * `crates/esmm-core/src/resolve.rs`: `Issue::AddedNameCannotBeKept`;
+//!   `app/src-tauri/src/views.rs`: `IssueView::AddedNameCannotBeKept` and its line in
+//!   `From<&Issue>`; `app/src/format.ts`: the `addedNameCannotBeKept` case;
+//!   `app/src/format.test.ts`: its two lines
+//! * `crates/esmm-core/src/load_order.rs`, in case 2 only: the `plugin_naming` journal in
+//!   `journal_pending`, the second half of the test `a_pending_journal_blocks_new_changes`, and
+//!   the `plugin_naming` lines of the test `the_naming_step_and_the_manager_agree_with_this_module`
+//! * `app/src-tauri/src/shell.rs`: `use esmm_core::plugin_naming;`, the
+//!   `recover_interrupted_naming` call (with its comment) in `snapshot` and the function itself,
+//!   and the `naming_paths` function
+//!
+//! **List N2, the naming part's page** (case 2 only; in case 3 it goes with list L's files):
+//! * `app/src-tauri/src/shell/load_order.rs`: `naming_err`, `name_token`, `name_choice`,
+//!   `naming_offer`, `require_nameable`, `load_order_plan_name`, `load_order_commit_name`, the
+//!   `naming` variable and the `can_name`/`name_hint` fields in `load_order_state`, the
+//!   `plugin_naming`/`naming_paths`/`ExcludeReason` imports, and the tests from
+//!   `--- "Give it a name"` on plus `naming_commands_through_ipc`
+//! * `app/src-tauri/src/load_order_views.rs`: `can_name`, `name_hint`, and the
+//!   `LoadOrderName*` types with the `plugin_naming` import; `app/src/bindings/LoadOrderName*.ts`
+//! * `app/src-tauri/src/commands.rs` and `app/src-tauri/src/lib.rs`: `load_order_plan_name` and
+//!   `load_order_commit_name`
+//! * `app/src/api.ts`: `loadOrderPlanName`, `loadOrderCommitName` and their two type imports
+//! * `app/src/views/LoadOrderView.tsx`: `NameDialog`, the `naming` state, `onNamed`, the "Give it
+//!   a name" button and hint, the `<NameDialog>` render, the `ReactNode` and `LoadOrderName*`
+//!   imports and the `describeName*` imports, and `e.canName` passed to `describeExclusion`
+//! * `app/src/loadOrder.ts`: `describeNameDependent`, `describeNameConsequences`,
+//!   `describeNameWrite`, their imports, and the `canName` parameter of `describeExclusion`;
+//!   `app/src/loadOrder.test.ts`: the "naming a plugin" tests, `namePlan`, and the `canName` lines
+//! * `app/src/styles.css`: the `"Give it a name" dialog` block
+//!
+//! Then run `cargo fmt` (deleting lines leaves stray blank lines) and, in cases 1 and 3, delete
+//! the empty `app/src-tauri/src/shell/` folder. Before the naming part existed, list L was
+//! checked in a throwaway copy (`cargo fmt --check`, `cargo clippy --all-targets`,
+//! `cargo test --workspace`, `npm run build` and `npm test` all passed); see `CLAUDE.md`
+//! (decision M) for which of the three cases have been checked since.
 //!
 //! Documentation is not code and nothing breaks if it stays, but if the feature is removed for
 //! good, also deal with decision M and roadmap item 1d in `CLAUDE.md`, the README bullets,
 //! `docs/proposals/endless-sky-load-order-request.md` and
 //! `project-memory/prompts/load-order-cloud-session.md`.
 //!
-//! The generic `original_folder` and `added_name` fields on `InstallRecord`, the shared
-//! `files::plugin_folders_lock` and the "update in place" rule in `manager::plan_update` are
-//! harmless without the feature and can stay.
+//! These stay in every case and are harmless without the feature: the `original_folder` and
+//! `added_name` fields on `InstallRecord`, `files::plugin_folders_lock`, `manager::begin_change`
+//! and `manager::UNFINISHED_CHANGE_JOURNALS` (a journal that never exists blocks nothing), and
+//! the "update in place" and "install into the folder it is already in" rules in `manager.rs`.
 //!
 //! A future native mechanism in the game would be another implementation of
 //! [`LoadOrderBackend`]; callers do not need to change.
@@ -2113,6 +2148,51 @@ mod tests {
         assert_eq!(out, Recovery::Finished { renames: 1 });
         assert_eq!(w.folders(), ["010-Alpha", "020-Beta"]);
         assert!(!w.journal_exists());
+    }
+
+    #[test]
+    fn the_naming_step_and_the_manager_agree_with_this_module() {
+        // They spell these out so they don't depend on this file.
+        assert_eq!(crate::manager::UNFINISHED_CHANGE_JOURNALS[0], JOURNAL_FILE);
+        assert_eq!(crate::plugin_naming::LOAD_ORDER_JOURNAL_FILE, JOURNAL_FILE);
+        // "A folder name the load order numbers" means the same in both places.
+        let long_ok = "x".repeat(251);
+        let long_bad = "x".repeat(252);
+        for folder in [
+            "Plain",
+            "Mega Freight",
+            "Odd.",
+            "trailing ",
+            "con",
+            "a/b",
+            "a:b",
+            long_ok.as_str(),
+            long_bad.as_str(),
+        ] {
+            let plugin = InstalledPlugin {
+                folder: folder.to_string(),
+                identity: "Named".into(),
+                meta: PluginMeta {
+                    name: Some("Named".into()),
+                    ..Default::default()
+                },
+                record: Some(InstallRecord {
+                    catalog_name: "C".into(),
+                    folder: folder.to_string(),
+                    identity: "Named".into(),
+                    version: "1".into(),
+                    source_url: String::new(),
+                    sha256: "h".into(),
+                    original_folder: None,
+                    added_name: None,
+                }),
+            };
+            assert_eq!(
+                exclusion_reasons(&plugin).contains(&ExcludeReason::UnsupportedFolderName),
+                !crate::plugin_naming::folder_can_take_a_number(folder),
+                "{folder:?}"
+            );
+        }
     }
 
     #[test]

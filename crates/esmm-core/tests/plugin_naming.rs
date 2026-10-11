@@ -1,10 +1,14 @@
 //! "Give it a name" (`plugin_naming`) together with the rest of the manager: updates must put
-//! the added name back (the critical part: an update replaces the whole folder), plans for those
-//! updates must not show false problems, and a named plugin must then be ordered and restored by
-//! the load-order feature with its identity unchanged. All offline, in temp dirs; a `Fetcher`
-//! serves zips built on the fly.
+//! the added name back (the critical part: an update replaces the whole folder), unless the user
+//! took it out by hand; plans for those updates must not show false problems; a requirement on a
+//! renamed plugin's old name must be reported, never "satisfied" by a second copy; and the
+//! manager's own commits must wait for an unfinished naming. All offline, in temp dirs; a
+//! `Fetcher` serves zips built on the fly.
 //!
-//! This file belongs to the optional load-order feature (see `src/load_order.rs`).
+//! This file belongs to the optional load-order feature's naming step, but deliberately does
+//! not use `load_order` (so it keeps compiling if the rest of the feature is removed while
+//! named plugins still need their name put back). Naming together with the load order is in
+//! `tests/load_order_naming.rs`.
 
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -16,8 +20,7 @@ use esmm_core::catalog::CatalogEntry;
 use esmm_core::download::Downloaded;
 use esmm_core::game_state::{self, GameProcess};
 use esmm_core::install;
-use esmm_core::load_order::{self, LoadOrderBackend};
-use esmm_core::manager::{self, CommitContext, Fetcher, InstalledPlugin, PlanContext};
+use esmm_core::manager::{self, CommitContext, CommitError, Fetcher, InstalledPlugin, PlanContext};
 use esmm_core::plugin_naming::{self, NameChoice};
 use esmm_core::plugin_state::PluginStates;
 use esmm_core::profiles::{Profile, ProfileStore};
@@ -145,7 +148,7 @@ impl World {
             .unwrap()
             .map(|e| e.unwrap().file_name().into_string().unwrap())
             .collect();
-        names.sort_by(|a, b| load_order::game_order(a, b));
+        names.sort();
         names
     }
 
@@ -210,32 +213,6 @@ impl World {
         game_state::write_plugin_states(&self.config, &states, GameProcess::NotRunning).unwrap();
     }
 
-    fn apply_order(&self, wanted: &[&str]) {
-        let backend = load_order::default_backend();
-        let paths = load_order::Paths::new(&self.config, &self.records_path);
-        let wanted: Vec<String> = wanted.iter().map(|s| s.to_string()).collect();
-        let plan = backend
-            .plan_apply(&paths, &self.installed(), &wanted)
-            .unwrap();
-        backend
-            .commit(&paths, &plan, GameProcess::NotRunning)
-            .unwrap();
-    }
-
-    fn restore_order(&self) {
-        let backend = load_order::default_backend();
-        let paths = load_order::Paths::new(&self.config, &self.records_path);
-        let plan = backend.plan_restore(&paths, &self.installed()).unwrap();
-        assert!(
-            plan.identity_changes.is_empty(),
-            "{:?}",
-            plan.identity_changes
-        );
-        backend
-            .commit(&paths, &plan, GameProcess::NotRunning)
-            .unwrap();
-    }
-
     fn update(&self, folder: &str) {
         let plan = self
             .with_ctx(|ctx| manager::plan_update(folder, ctx))
@@ -259,62 +236,27 @@ fn world_with_foo() -> World {
     w
 }
 
-// --- after naming, the load order treats it like any other plugin ---------------------------
-
-#[test]
-fn a_named_plugin_can_be_ordered_and_restored_with_its_identity_unchanged() {
-    let w = world_with_foo();
-    let layout = load_order::default_backend().layout(&w.installed());
-    assert!(layout.ordered.iter().all(|p| p.folder != "Foo"), "left out");
-
-    w.name("Foo", NameChoice::FolderName);
-    let layout = load_order::default_backend().layout(&w.installed());
-    let orderable: Vec<&str> = layout.ordered.iter().map(|p| p.folder.as_str()).collect();
-    assert_eq!(orderable, ["Bar", "Foo"]);
-
-    w.apply_order(&["Foo", "Bar"]);
-    assert_eq!(w.folders(), ["010-Foo", "020-Bar"]);
-    assert_eq!(w.identity_of("010-Foo"), "Foo", "the game still sees Foo");
-    let record = &w.records()["010-Foo"];
-    assert_eq!(record.original_folder.as_deref(), Some("Foo"));
-    assert_eq!(record.added_name.as_deref(), Some("Foo"));
-
-    w.restore_order();
-    assert_eq!(w.folders(), ["Bar", "Foo"]);
-    assert_eq!(w.identity_of("Foo"), "Foo");
-    let record = &w.records()["Foo"];
-    assert_eq!(record.original_folder, None);
-    assert_eq!(record.added_name.as_deref(), Some("Foo"));
-}
-
 // --- updates put the name back -------------------------------------------------------------
 
 #[test]
-fn an_update_puts_the_added_name_back_in_a_numbered_folder() {
+fn an_update_puts_the_added_name_back() {
     let mut w = world_with_foo();
     w.name("Foo", NameChoice::FolderName);
-    w.apply_order(&["Bar", "Foo"]);
-    assert_eq!(w.folders(), ["010-Bar", "020-Foo"]);
     w.set_enabled("Foo", false);
-
     w.publish("Foo", "2", Some(NAMELESS_V2));
-    w.update("020-Foo");
+    w.update("Foo");
 
-    assert_eq!(w.folders(), ["010-Bar", "020-Foo"], "no second copy");
+    assert_eq!(w.folders(), ["Bar", "Foo"], "no second copy");
     assert_eq!(
-        w.plugin_txt("020-Foo"),
+        w.plugin_txt("Foo"),
         format!("name \"Foo\"\n{NAMELESS_V2}"),
         "the new version, with the name line back on top"
     );
-    // Without the name it would be "020-Foo" now, and its off switch would no longer apply.
-    assert_eq!(w.identity_of("020-Foo"), "Foo");
+    assert_eq!(w.identity_of("Foo"), "Foo");
     assert_eq!(w.states().get("Foo"), Some(&false));
-    assert_eq!(w.states().get("020-Foo"), None);
-    let record = &w.records()["020-Foo"];
+    let record = &w.records()["Foo"];
     assert_eq!(record.version, "2");
-    assert_eq!(record.identity, "Foo");
     assert_eq!(record.added_name.as_deref(), Some("Foo"));
-    assert_eq!(record.original_folder.as_deref(), Some("Foo"));
     // The backup now holds the new version's file as it came.
     let backup = plugin_naming::backup_dir(&w.records_path).join("Foo.plugin.txt");
     assert_eq!(fs::read_to_string(backup).unwrap(), NAMELESS_V2);
@@ -359,30 +301,6 @@ fn an_update_of_a_plugin_with_a_typed_name_plans_without_false_problems() {
 }
 
 #[test]
-fn an_update_in_a_numbered_folder_is_planned_under_the_added_name_not_the_folder_name() {
-    // Without the name, the new copy in "020-Foo" would look like a plugin called "020-Foo",
-    // and Dep's requirement on "Foo" would look unmet.
-    let mut w = world_with_foo();
-    w.publish(
-        "Dep",
-        "1",
-        Some("name \"Dep\"\ndependencies\n\trequires\n\t\tFoo\n"),
-    );
-    w.install("Dep");
-    w.name("Foo", NameChoice::FolderName);
-    w.apply_order(&["Bar", "Dep", "Foo"]);
-    assert_eq!(w.folders(), ["010-Bar", "020-Dep", "030-Foo"]);
-
-    w.publish("Foo", "2", Some(NAMELESS_V2));
-    let plan = w
-        .with_ctx(|ctx| manager::plan_update("030-Foo", ctx))
-        .unwrap();
-    assert_eq!(plan.issues, Vec::<Issue>::new());
-    manager::commit_update(plan, &w.commit_ctx(), false).unwrap();
-    assert_eq!(w.identity_of("030-Foo"), "Foo");
-}
-
-#[test]
 fn update_all_puts_every_added_name_back() {
     let mut w = world_with_foo();
     w.publish("Baz", "1", None);
@@ -412,7 +330,9 @@ fn when_the_new_version_names_itself_the_added_name_is_dropped() {
     let mut w = world_with_foo();
     w.name("Foo", NameChoice::Typed("Mine".into()));
     w.publish("Foo", "2", Some("name \"Upstream Foo\"\nversion 2\n"));
-    w.update("Foo");
+    // Planned under the new version's own name, as the commit will install it.
+    let plan = w.with_ctx(|ctx| manager::plan_update("Foo", ctx)).unwrap();
+    manager::commit_update(plan, &w.commit_ctx(), true).unwrap();
 
     assert_eq!(
         w.plugin_txt("Foo"),
@@ -426,19 +346,32 @@ fn when_the_new_version_names_itself_the_added_name_is_dropped() {
 }
 
 #[test]
-fn a_new_version_with_a_blank_name_line_is_refused_before_anything_is_installed() {
+fn a_new_version_with_a_blank_name_line_is_a_problem_in_the_plan_not_a_surprise_at_commit() {
     let mut w = world_with_foo();
     w.name("Foo", NameChoice::FolderName);
     w.publish("Foo", "2", Some("name \"\"\nversion 2\n"));
     let plan = w.with_ctx(|ctx| manager::plan_update("Foo", ctx)).unwrap();
+    assert!(
+        plan.issues.contains(&Issue::AddedNameCannotBeKept {
+            folder: "Foo".into(),
+            name: "Foo".into()
+        }),
+        "{:?}",
+        plan.issues
+    );
     let err = manager::commit_update(plan, &w.commit_ctx(), false).unwrap_err();
-    assert!(err.to_string().contains("can't put back"), "{err}");
+    assert!(matches!(err, CommitError::Blocked(_)), "{err}");
     assert_eq!(
         w.plugin_txt("Foo"),
         format!("name \"Foo\"\n{NAMELESS_V1}"),
         "the installed copy is untouched"
     );
-    assert_eq!(w.records()["Foo"].version, "1");
+
+    // Going ahead anyway installs the new version as it is, without the name.
+    let plan = w.with_ctx(|ctx| manager::plan_update("Foo", ctx)).unwrap();
+    manager::commit_update(plan, &w.commit_ctx(), true).unwrap();
+    assert_eq!(w.plugin_txt("Foo"), "name \"\"\nversion 2\n");
+    assert_eq!(w.records()["Foo"].added_name, None);
 }
 
 #[test]
@@ -464,12 +397,68 @@ fn a_typed_name_carries_profiles_and_a_disabled_state_through_an_update() {
     assert!(!profile.enabled.contains_key("Foo"));
 }
 
+// --- the user took the name out (or changed it) by hand ------------------------------------
+
+/// Puts `text` in Foo's plugin.txt, as a user editing it (or putting the backup back) would.
+fn edit_by_hand(w: &World, folder: &str, text: &str) {
+    fs::write(w.plugins_dir().join(folder).join("plugin.txt"), text).unwrap();
+}
+
 #[test]
-fn a_plugin_that_requires_the_old_name_is_reported_not_quietly_satisfied() {
+fn a_name_removed_by_hand_is_not_put_back_and_the_plan_agrees() {
+    let mut w = world_with_foo();
+    w.name("Foo", NameChoice::Typed("Foo Expanded".into()));
+    // The user puts the backup back: the plugin is "Foo" again.
+    let backup = plugin_naming::backup_dir(&w.records_path).join("Foo.plugin.txt");
+    edit_by_hand(&w, "Foo", &fs::read_to_string(backup).unwrap());
+    assert_eq!(w.identity_of("Foo"), "Foo");
+
+    w.publish("Foo", "2", Some(NAMELESS_V2));
+    w.update("Foo"); // asserts the plan has no problems
+    assert_eq!(w.plugin_txt("Foo"), NAMELESS_V2, "no name written back");
+    assert_eq!(w.identity_of("Foo"), "Foo");
+    let record = &w.records()["Foo"];
+    assert_eq!(record.added_name, None, "the hand edit stands");
+    assert_eq!(record.identity, "Foo");
+}
+
+#[test]
+fn a_name_changed_by_hand_is_not_overwritten_even_through_update_all() {
+    let mut w = world_with_foo();
+    w.publish("Baz", "1", None);
+    w.install("Baz");
+    w.name("Foo", NameChoice::FolderName);
+    w.name("Baz", NameChoice::FolderName);
+    edit_by_hand(&w, "Foo", "name \"My Own Foo\"\nversion 1\n");
+    w.publish("Foo", "2", Some(NAMELESS_V2));
+    w.publish("Baz", "2", None);
+
+    let plans = w.with_ctx(|ctx| {
+        vec![
+            manager::plan_update("Foo", ctx).unwrap(),
+            manager::plan_update("Baz", ctx).unwrap(),
+        ]
+    });
+    assert!(plans.iter().all(|p| p.issues.is_empty()));
+    manager::commit_update_all(plans, &w.commit_ctx(), false).unwrap();
+    // Foo's hand-chosen name was in the old copy only; the new version has none, and the
+    // manager does not impose the name it once added.
+    assert_eq!(w.plugin_txt("Foo"), NAMELESS_V2);
+    assert_eq!(w.records()["Foo"].added_name, None);
+    // Baz was untouched by hand, so its name is put back as usual.
+    assert_eq!(w.identity_of("Baz"), "Baz");
+    assert_eq!(w.records()["Baz"].added_name.as_deref(), Some("Baz"));
+}
+
+// --- requirements on the old name ------------------------------------------------------------
+
+#[test]
+fn a_plugin_that_requires_the_old_name_is_reported_and_no_second_copy_is_installed() {
     // Foo was given another name; Dep still requires "Foo". The catalog entry "Foo" is the very
     // plugin that was renamed, so installing Dep must not treat reinstalling it as a fix.
     let mut w = world_with_foo();
     w.name("Foo", NameChoice::Typed("Foo Deluxe".into()));
+    w.set_enabled("Foo Deluxe", false);
     w.publish(
         "Dep",
         "1",
@@ -486,8 +475,38 @@ fn a_plugin_that_requires_the_old_name_is_reported_not_quietly_satisfied() {
         "{:?}",
         plan.issues
     );
-    // If the user installs anyway, the reinstalled Foo keeps the name they gave it.
+    // Going ahead installs Dep only: Foo is not reinstalled, and stays switched off.
     manager::commit(plan, &w.commit_ctx(), true).unwrap();
+    assert_eq!(w.folders(), ["Bar", "Dep", "Foo"]);
     assert_eq!(w.identity_of("Foo"), "Foo Deluxe");
-    assert_eq!(w.records()["Foo"].added_name.as_deref(), Some("Foo Deluxe"));
+    assert_eq!(w.states().get("Foo Deluxe"), Some(&false));
+    assert_eq!(w.states().get("Foo"), None);
+    assert_eq!(w.records()["Foo"].version, "1", "not reinstalled");
+}
+
+// --- commits wait for an unfinished naming ---------------------------------------------------
+
+#[test]
+fn the_managers_own_commits_wait_while_a_naming_or_renaming_is_unfinished() {
+    let w = world_with_foo();
+    for journal in manager::UNFINISHED_CHANGE_JOURNALS {
+        let path = w.records_path.with_file_name(journal);
+        fs::write(&path, "{}").unwrap();
+        let plan = w.with_ctx(|ctx| manager::plan_disable("Bar", ctx));
+        let err = manager::commit_disable(plan, &w.commit_ctx(), false).unwrap_err();
+        assert!(matches!(err, CommitError::Unfinished), "{err}");
+        assert_eq!(
+            w.states().get("Bar"),
+            Some(&true),
+            "still on: nothing written"
+        );
+        fs::remove_file(&path).unwrap();
+    }
+    assert_eq!(
+        manager::UNFINISHED_CHANGE_JOURNALS[1],
+        plugin_naming::JOURNAL_FILE
+    );
+    let plan = w.with_ctx(|ctx| manager::plan_disable("Bar", ctx));
+    manager::commit_disable(plan, &w.commit_ctx(), false).unwrap();
+    assert_eq!(w.states().get("Bar"), Some(&false));
 }

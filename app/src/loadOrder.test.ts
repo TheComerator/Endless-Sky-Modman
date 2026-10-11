@@ -156,10 +156,12 @@ const namePlan = (overrides: Partial<LoadOrderNamePlanView> = {}): LoadOrderName
   name: "Foo",
   oldIdentity: "Foo",
   line: 'name "Foo"',
+  lineAtEnd: false,
   createsFile: false,
   backup: "/data/plugin-txt-backups/Foo.plugin.txt",
   identityChanges: false,
   enabled: true,
+  pluginsTxtBackup: null,
   profiles: [],
   dependents: [],
   token: "t",
@@ -179,6 +181,11 @@ describe("naming a plugin", () => {
     expect(lines.join(" ")).toContain("switched off and stays off");
     expect(lines.join(" ")).toContain("The 2 profiles that include it switch to the new name: Main, Lite.");
     expect(lines.join(" ")).toContain("record");
+    expect(lines.join(" ")).not.toContain("copied first");
+    const withBackup = describeNameConsequences(
+      namePlan({ name: "Bar", identityChanges: true, pluginsTxtBackup: "/cfg/plugins.txt.esmm-naming-bak" }),
+    );
+    expect(withBackup.join(" ")).toContain("copied first to /cfg/plugins.txt.esmm-naming-bak");
     const on = describeNameConsequences(namePlan({ name: "Bar", identityChanges: true, profiles: ["Main"] }));
     expect(on.join(" ")).toContain("switched on and stays on");
     expect(on.join(" ")).toContain("The profile that includes it switches to the new name: Main.");
@@ -194,5 +201,7 @@ describe("naming a plugin", () => {
     expect(describeNameWrite(namePlan())).toContain("top of its plugin.txt");
     expect(describeNameWrite(namePlan())).toContain("/data/plugin-txt-backups/Foo.plugin.txt");
     expect(describeNameWrite(namePlan({ createsFile: true }))).toContain("creates one");
+    expect(describeNameWrite(namePlan({ lineAtEnd: true }))).toContain("at the end of its plugin.txt");
+    expect(describeNameWrite(namePlan({ lineAtEnd: true }))).not.toContain("at the top");
   });
 });

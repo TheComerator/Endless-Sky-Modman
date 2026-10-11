@@ -18,7 +18,7 @@ use crate::download::Downloaded;
 use crate::game_state::{self, GameProcess};
 use crate::install::{self, InstallError, Installed};
 use crate::plugin_meta::PluginMeta;
-use crate::plugin_naming;
+use crate::plugin_naming::{self, Reapply}; // plugin naming
 use crate::plugin_state::PluginStates;
 use crate::profiles::ProfileStore;
 use crate::records::{self, InstallRecord, InstallRecords};
@@ -154,9 +154,11 @@ pub struct StagedPlugin {
     pub version: String,
     pub source_url: String,
     pub sha256: String,
-    /// Set by the commit (see `put_back_added_names`): the name the manager wrote back into
-    /// this copy's plugin.txt, for the new install record. `None` until then, and for nearly
-    /// every plugin.
+    /// Plugin naming (see `put_back_added_names`): set by the commit when it is about to write a
+    /// name the manager added back into this copy (the record it belongs to, and the name).
+    name_to_write: Option<(InstallRecord, String)>,
+    /// Plugin naming: the name the commit wrote back into this copy's plugin.txt, for the new
+    /// install record's `added_name`. `None` for nearly every plugin.
     added_name: Option<String>,
 }
 
@@ -188,32 +190,79 @@ fn stage_download(ctx: &PlanContext, entry: &CatalogEntry) -> Result<StagedPlugi
         version: entry.version.clone(),
         source_url: entry.url.clone(),
         sha256: downloaded.sha256,
+        name_to_write: None,
         added_name: None,
     })
 }
 
-/// [`stage_download`] for an install (not an update): if the copy will replace a folder whose
-/// record says the manager added a name, plan with that name. Only reachable through a
-/// requirement, since the shell refuses a plain install of a plugin that is already installed.
-fn stage_for_install(ctx: &PlanContext, entry: &CatalogEntry) -> Result<StagedPlugin, String> {
+/// The installed plugin a catalog entry already is, if any: the one whose record names that
+/// catalog entry, whatever its folder is called now (a load-order number, or the name a
+/// hand-placed plugin was adopted under). Always looked up by catalog name, never by the folder
+/// name the catalog name would give: that misses a renamed folder, and installing there would
+/// put a second copy of the plugin beside the first.
+fn installed_copy_of<'a>(ctx: &'a PlanContext, catalog_name: &str) -> Option<&'a InstalledPlugin> {
+    ctx.installed.iter().find(|p| {
+        p.record
+            .as_ref()
+            .is_some_and(|r| r.catalog_name == catalog_name)
+    })
+}
+
+/// [`stage_download`] for the plugin an install was asked for. If that catalog entry is already
+/// installed (the shell refuses this and offers an update instead, but the core must not rely on
+/// it), the copy replaces the installed folder, as an update does, never a second copy beside
+/// it; then a name the manager added is expected back, as for an update.
+fn stage_for_install(
+    ctx: &PlanContext,
+    entry: &CatalogEntry,
+) -> Result<(StagedPlugin, Option<Issue>), String> {
     let mut staged = stage_download(ctx, entry)?;
-    let record = ctx
-        .records
-        .get(&staged.folder)
-        .filter(|r| r.catalog_name == staged.catalog_name);
-    expect_added_name(&mut staged, record);
-    Ok(staged)
+    let mut issue = None;
+    if let Some(existing) = installed_copy_of(ctx, &entry.name) {
+        if install::sanitize_folder_name(&existing.folder) == existing.folder {
+            staged.folder = existing.folder.clone();
+            staged.identity = staged.meta.identity(&staged.folder).to_string();
+        }
+        // Plugin naming: a name the manager added is expected back, as for an update.
+        issue = expect_added_name(
+            &mut staged,
+            existing.record.as_ref(),
+            existing.meta.name.as_deref(),
+        );
+    }
+    Ok((staged, issue))
 }
 
 /// Plugin naming hook (the optional load-order feature's "give it a name" step, see
 /// `plugin_naming`). An update replaces the whole folder, and the download doesn't have the
 /// `name` line the manager added, so the commit writes it back in (`put_back_added_names`).
-/// Planning must expect that, or the new copy would be checked under its folder name and
-/// show false problems (a requirement on the name looking unmet, a duplicate identity...).
-fn expect_added_name(staged: &mut StagedPlugin, record: Option<&InstallRecord>) {
-    if let Some(name) = plugin_naming::name_to_reapply(record, &staged.meta) {
-        staged.identity = name.clone();
-        staged.meta.name = Some(name);
+/// Planning asks the same question the commit will (`plugin_naming::reapply_decision`), with
+/// `installed_name` the name in the copy being replaced, so it expects exactly what the commit
+/// does: otherwise the new copy would be checked under its folder name and show false problems
+/// (a requirement on the name looking unmet, a duplicate identity...). Returns a blocking
+/// problem when the name can't be kept.
+fn expect_added_name(
+    staged: &mut StagedPlugin,
+    record: Option<&InstallRecord>,
+    installed_name: Option<&str>,
+) -> Option<Issue> {
+    let cannot_keep = |name: String| Issue::AddedNameCannotBeKept {
+        folder: staged.folder.clone(),
+        name,
+    };
+    match plugin_naming::reapply_decision(record, installed_name, &staged.root) {
+        Ok(Reapply::Nothing) => None,
+        Ok(Reapply::Write(name)) => {
+            staged.identity = name.clone();
+            staged.meta.name = Some(name);
+            None
+        }
+        Ok(Reapply::CannotKeep(name)) => Some(cannot_keep(name)),
+        Err(_) => Some(cannot_keep(
+            record
+                .and_then(|r| r.added_name.clone())
+                .unwrap_or_default(),
+        )),
     }
 }
 
@@ -327,17 +376,25 @@ impl<'ctx, 'a> PlanBuilder<'ctx, 'a> {
             return;
         }
         let catalog_name = found.name.clone();
-        match stage_for_install(self.ctx, &found) {
+        // The catalog entry is already installed, but not under the required name (that would
+        // have been found by identity first): a plugin the user gave another name, one whose
+        // own name differs, or a hand-placed folder where it would go. Reinstalling it would
+        // not make it answer to that name, and could put a second copy beside it (or replace
+        // a switched-off plugin with a switched-on copy), so report it and stage nothing.
+        let target = install::sanitize_folder_name(&found.name);
+        if let Some(existing) = installed_copy_of(self.ctx, &found.name)
+            .or_else(|| self.ctx.installed.iter().find(|p| p.folder == target))
+        {
+            self.issues.push(Issue::IdentityMismatch {
+                expected: required_identity.to_string(),
+                catalog_name,
+                actual: existing.identity.clone(),
+            });
+            return;
+        }
+        match stage_download(self.ctx, &found) {
             Ok(staged) => {
-                // Plugin naming: the catalog entry is a plugin the user gave another name, so
-                // it no longer answers to the name that is required; say so, as for a `Likely`
-                // match, rather than quietly reinstalling it as if that settled the requirement.
-                let renamed_by_user = self
-                    .ctx
-                    .records
-                    .get(&staged.folder)
-                    .is_some_and(|r| r.added_name.as_deref() == Some(staged.identity.as_str()));
-                if (is_likely || renamed_by_user) && staged.identity != required_identity {
+                if is_likely && staged.identity != required_identity {
                     self.issues.push(Issue::IdentityMismatch {
                         expected: required_identity.to_string(),
                         catalog_name,
@@ -355,7 +412,10 @@ impl<'ctx, 'a> PlanBuilder<'ctx, 'a> {
 
     fn stage_and_walk(&mut self, entry: &CatalogEntry) {
         match stage_for_install(self.ctx, entry) {
-            Ok(staged) => self.finish_staging(staged),
+            Ok((staged, issue)) => {
+                self.issues.extend(issue);
+                self.finish_staging(staged);
+            }
             Err(error) => self.issues.push(Issue::CatalogDownloadFailed {
                 catalog_name: entry.name.clone(),
                 error,
@@ -691,7 +751,7 @@ pub fn plan_update(folder: &str, ctx: &PlanContext) -> Result<UpdatePlan, String
         staged.identity = staged.meta.identity(&staged.folder).to_string();
     }
     // Plugin naming: a name the manager added is put back at commit; plan with it.
-    expect_added_name(&mut staged, Some(record));
+    let naming_issue = expect_added_name(&mut staged, Some(record), current.meta.name.as_deref());
 
     let currently_enabled = game_state::effective_enabled(ctx.states, &current.identity);
     // Only walk the new version's requirements if it's actually going to be enabled; nothing
@@ -757,6 +817,7 @@ pub fn plan_update(folder: &str, ctx: &PlanContext) -> Result<UpdatePlan, String
 
     let mut issues = resolve::check_state(&planned, ctx.game_version);
     issues.append(&mut requirement_issues);
+    issues.extend(naming_issue);
     if currently_enabled {
         // A safety net over the whole final state (e.g. another plugin's requirement the
         // update stops satisfying); anything the walk above already reported isn't repeated.
@@ -919,6 +980,10 @@ pub enum CommitError {
     },
     #[error("uninstall failed: {0}")]
     Uninstall(InstallError),
+    #[error(
+        "An earlier change to the plugin folders (a load-order renaming, or adding a plugin name) isn't finished yet. The manager finishes it by itself once Endless Sky is closed; try again then."
+    )]
+    Unfinished,
     #[error("{0}")]
     Io(String),
 }
@@ -1012,13 +1077,17 @@ fn ensure_update_target_exists(plugins_dir: &Path, plan: &UpdatePlan) -> Result<
     Ok(())
 }
 
-/// Plugin naming hook, run by every commit before anything is installed: for each downloaded
+/// Plugin naming hook, run by every commit before anything is installed. For each downloaded
 /// copy about to replace a plugin the manager once gave a name to (its record has
-/// `added_name`), writes that name back into the copy while it is still in staging, so it
-/// arrives in `plugins/` already named and its identity never changes
-/// (`plugin_naming::reapply_to_staged`). The result is kept for the new record. Each copy is
-/// matched to the record of the folder it will replace.
-fn put_back_added_names(
+/// `added_name`), decides what to do about that name (`plugin_naming::reapply_decision`, the
+/// same question planning asked): normally write it back into the copy while it is still in
+/// staging, so it arrives in `plugins/` already named and its identity never changes. Each copy
+/// is matched to the record of the folder it really replaces (one that exists on disk; for an
+/// update, the folder the plugin is in now, whatever it is called).
+///
+/// Two passes: [`decide_added_name`] for every copy first (reads only, so a refusal changes
+/// nothing), then [`write_added_names`] (backup copies and the staged writes).
+fn decide_added_names(
     ctx: &CommitContext,
     records: &InstallRecords,
     steps: &mut [PlanStep],
@@ -1026,30 +1095,88 @@ fn put_back_added_names(
     for step in steps {
         if let PlanStep::Install(staged) = step {
             let folder = staged.folder.clone();
-            put_back_added_name(ctx, records, &folder, staged)?;
+            decide_added_name(ctx, records, &folder, staged)?;
         }
     }
     Ok(())
 }
 
-/// The same for one copy; `record_folder` is the folder it replaces (for an update, the folder
-/// the plugin is in now).
-fn put_back_added_name(
+fn decide_added_name(
     ctx: &CommitContext,
     records: &InstallRecords,
     record_folder: &str,
     staged: &mut StagedPlugin,
 ) -> Result<(), CommitError> {
-    let record = records
+    let replaced = install::plugins_dir(ctx.config_dir).join(record_folder);
+    let Some(record) = records
         .get(record_folder)
-        .filter(|r| r.catalog_name == staged.catalog_name);
-    staged.added_name = plugin_naming::reapply_to_staged(
-        &staged.root,
-        record,
-        &plugin_naming::backup_dir(ctx.records_path),
-    )
-    .map_err(|e| CommitError::Io(e.to_string()))?;
+        .filter(|r| r.catalog_name == staged.catalog_name && r.added_name.is_some())
+        .filter(|_| replaced.is_dir())
+    else {
+        return Ok(());
+    };
+    let naming_err = |e: plugin_naming::NamingError| CommitError::Io(e.to_string());
+    let installed_name = plugin_naming::current_name(&replaced).map_err(naming_err)?;
+    // `CannotKeep` was a blocking problem when this was planned, so getting here means the user
+    // chose to go ahead without the name.
+    if let Reapply::Write(name) =
+        plugin_naming::reapply_decision(Some(record), installed_name.as_deref(), &staged.root)
+            .map_err(naming_err)?
+    {
+        staged.name_to_write = Some((record.clone(), name));
+    }
     Ok(())
+}
+
+/// The second pass of [`decide_added_names`].
+fn write_added_names(ctx: &CommitContext, steps: &mut [PlanStep]) -> Result<(), CommitError> {
+    for step in steps {
+        if let PlanStep::Install(staged) = step {
+            write_added_name(ctx, staged)?;
+        }
+    }
+    Ok(())
+}
+
+fn write_added_name(ctx: &CommitContext, staged: &mut StagedPlugin) -> Result<(), CommitError> {
+    if let Some((record, name)) = staged.name_to_write.take() {
+        plugin_naming::write_name_into_staged(
+            &staged.root,
+            &record,
+            &name,
+            &plugin_naming::backup_dir(ctx.records_path),
+        )
+        .map_err(|e| CommitError::Io(e.to_string()))?;
+        staged.added_name = Some(name);
+    }
+    Ok(())
+}
+
+/// The journals of the optional load-order feature: an unfinished folder renaming
+/// (`load_order::JOURNAL_FILE`) and an unfinished "give it a name" (`plugin_naming::JOURNAL_FILE`),
+/// beside `records.json`. Spelled out so this file doesn't depend on those modules (tests there
+/// check the names match); with the feature removed they simply never exist.
+pub const UNFINISHED_CHANGE_JOURNALS: [&str; 2] =
+    ["load-order-journal.json", "plugin-naming-journal.json"];
+
+/// Held for the whole of a commit: the process-wide lock that load-order renames, naming and
+/// their recoveries also take, so none of them can run in the middle of a commit.
+pub struct ChangeGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+/// Takes that lock, and refuses while a load-order renaming or a naming is unfinished (its
+/// recovery is waiting, usually for the game to close): a commit then would read and write
+/// `plugins.txt` and the records under a half-done change.
+pub fn begin_change(records_path: &Path) -> Result<ChangeGuard, CommitError> {
+    let lock = crate::files::plugin_folders_lock();
+    if UNFINISHED_CHANGE_JOURNALS
+        .iter()
+        .any(|journal| records_path.with_file_name(journal).exists())
+    {
+        return Err(CommitError::Unfinished);
+    }
+    Ok(ChangeGuard { _lock: lock })
 }
 
 fn load_records(ctx: &CommitContext) -> Result<InstallRecords, CommitError> {
@@ -1136,8 +1263,10 @@ fn commit_inner(
 
     let plugins_dir = install::plugins_dir(ctx.config_dir);
     let tmp_dir = install::tmp_dir(ctx.config_dir);
+    let _guard = begin_change(ctx.records_path)?;
     let mut steps = plan.steps;
-    put_back_added_names(ctx, &load_records(ctx)?, &mut steps)?;
+    decide_added_names(ctx, &load_records(ctx)?, &mut steps)?;
+    write_added_names(ctx, &mut steps)?;
 
     let mut installed = Vec::new();
     let mut new_records = Vec::new();
@@ -1219,6 +1348,7 @@ fn commit_enable_inner(
 ) -> Result<CommitReport, CommitError> {
     refuse_if_blocked(&plan.issues, override_issues)?;
     let game = refuse_if_game_running(ctx.detect_game)?;
+    let _guard = begin_change(ctx.records_path)?;
     let to_enable = [plan.identity];
     let outcome = persist_changes(
         ctx,
@@ -1255,6 +1385,7 @@ fn commit_disable_inner(
 ) -> Result<CommitReport, CommitError> {
     refuse_if_blocked(&plan.issues, override_issues)?;
     let game = refuse_if_game_running(ctx.detect_game)?;
+    let _guard = begin_change(ctx.records_path)?;
     let to_disable = [plan.identity];
     let outcome = persist_changes(
         ctx,
@@ -1290,6 +1421,7 @@ fn commit_uninstall_inner(
 ) -> Result<CommitReport, CommitError> {
     refuse_if_blocked(&plan.issues, override_issues)?;
     let game = refuse_if_game_running(ctx.detect_game)?;
+    let _guard = begin_change(ctx.records_path)?;
     let plugins_dir = install::plugins_dir(ctx.config_dir);
     let tmp_dir = install::tmp_dir(ctx.config_dir);
     install::uninstall(&plugins_dir, &tmp_dir, &plan.folder).map_err(CommitError::Uninstall)?;
@@ -1340,11 +1472,15 @@ fn commit_update_inner(
     let game = refuse_if_game_running(ctx.detect_game)?;
     let plugins_dir = install::plugins_dir(ctx.config_dir);
     let tmp_dir = install::tmp_dir(ctx.config_dir);
+    let _guard = begin_change(ctx.records_path)?;
     ensure_update_target_exists(&plugins_dir, &plan)?;
     let mut plan = plan;
     let records = load_records(ctx)?;
-    put_back_added_names(ctx, &records, &mut plan.new_requirements)?;
-    put_back_added_name(ctx, &records, &plan.folder, &mut plan.staged)?;
+    decide_added_names(ctx, &records, &mut plan.new_requirements)?;
+    let folder = plan.folder.clone();
+    decide_added_name(ctx, &records, &folder, &mut plan.staged)?;
+    write_added_names(ctx, &mut plan.new_requirements)?;
+    write_added_name(ctx, &mut plan.staged)?;
 
     let mut installed = Vec::new();
     let mut upsert_records = Vec::new();
@@ -1475,17 +1611,24 @@ fn commit_update_all_inner(
         .collect();
     refuse_if_blocked(&all_issues, override_issues)?;
     let game = refuse_if_game_running(ctx.detect_game)?;
+    let _guard = begin_change(ctx.records_path)?;
 
     let plugins_dir = install::plugins_dir(ctx.config_dir);
     let tmp_dir = install::tmp_dir(ctx.config_dir);
     for plan in &plans {
         ensure_update_target_exists(&plugins_dir, plan)?;
     }
+    // Every decision first (reads only), so a refusal for one plugin changes nothing for any.
     let mut plans = plans;
     let records = load_records(ctx)?;
     for plan in &mut plans {
-        put_back_added_names(ctx, &records, &mut plan.new_requirements)?;
-        put_back_added_name(ctx, &records, &plan.folder, &mut plan.staged)?;
+        decide_added_names(ctx, &records, &mut plan.new_requirements)?;
+        let folder = plan.folder.clone();
+        decide_added_name(ctx, &records, &folder, &mut plan.staged)?;
+    }
+    for plan in &mut plans {
+        write_added_names(ctx, &mut plan.new_requirements)?;
+        write_added_name(ctx, &mut plan.staged)?;
     }
 
     let mut installed = Vec::new();

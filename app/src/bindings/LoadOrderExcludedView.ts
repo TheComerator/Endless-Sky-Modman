@@ -10,4 +10,10 @@ stillRenamed: boolean, enabled: boolean,
  * Its only problem is that its `plugin.txt` has no name (and the manager has a record of
  * it), so the page offers "Give it a name…" (`load_order_plan_name`).
  */
-canName: boolean, };
+canName: boolean, 
+/**
+ * When a name is what it lacks but it can't be given one here, why not (its folder still
+ * has a number, it is a link to a folder elsewhere, its plugin.txt has an empty `name`
+ * line...), shown in place of the button.
+ */
+nameHint: string | null, };

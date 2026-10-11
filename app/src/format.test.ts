@@ -62,10 +62,14 @@ describe("describeIssue", () => {
       { kind: "identityMismatch", expected: "A", catalogName: "A-Cat", actual: "Z" },
       { kind: "catalogDownloadFailed", catalogName: "A", error: "timeout" },
       { kind: "duplicateIdentity", identity: "A", existingFolder: "A-unmanaged", newFolder: "A-Cat" },
+      { kind: "addedNameCannotBeKept", folder: "020-Foo", name: "Foo" },
     ];
     for (const issue of kinds) {
       expect(describeIssue(issue).title.length).toBeGreaterThan(0);
     }
+    expect(describeIssue({ kind: "addedNameCannotBeKept", folder: "020-Foo", name: "Foo" }).detail).toContain(
+      'the name "Foo" to the plugin in 020-Foo',
+    );
   });
 });
 

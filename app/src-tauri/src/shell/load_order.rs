@@ -181,6 +181,7 @@ impl Shell {
             return Ok(LoadOrderState::empty(false, renamed_count));
         }
         let enabled = |identity: &str| game_state::effective_enabled(&snap.states, identity);
+        let naming = naming_paths(&snap.paths);
         Ok(LoadOrderState {
             enabled: true,
             plugins: layout
@@ -198,15 +199,17 @@ impl Shell {
             excluded: layout
                 .excluded
                 .iter()
-                .map(|e| LoadOrderExcludedView {
-                    folder: e.folder.clone(),
-                    identity: e.identity.clone(),
-                    reasons: e.reasons.iter().copied().map(Into::into).collect(),
-                    still_renamed: e.still_renamed,
-                    enabled: enabled(&e.identity),
-                    // Only a missing name stands in its way (no record would show up as
-                    // NotLinkedToCatalog as well), so a name makes it orderable.
-                    can_name: e.reasons == [ExcludeReason::NoPluginName],
+                .map(|e| {
+                    let (can_name, name_hint) = naming_offer(&naming, &snap, e);
+                    LoadOrderExcludedView {
+                        folder: e.folder.clone(),
+                        identity: e.identity.clone(),
+                        reasons: e.reasons.iter().copied().map(Into::into).collect(),
+                        still_renamed: e.still_renamed,
+                        enabled: enabled(&e.identity),
+                        can_name,
+                        name_hint,
+                    }
                 })
                 .collect(),
             renamed_count,
@@ -356,6 +359,7 @@ impl Shell {
         self.require_load_order()?;
         let _op = lock(&self.op_lock);
         let (_, snap) = self.snapshot()?;
+        require_nameable(&snap, folder)?;
         let plan = plugin_naming::plan_name(
             &naming_paths(&snap.paths),
             &snap.installed,
@@ -388,6 +392,7 @@ impl Shell {
             return Err(CmdError::game_running());
         }
         let (_, snap) = self.snapshot()?;
+        require_nameable(&snap, folder)?;
         let paths = naming_paths(&snap.paths);
         let plan = plugin_naming::plan_name(
             &paths,
@@ -411,7 +416,10 @@ impl Shell {
                 | NamingError::Busy
                 | NamingError::Missing(_)
                 | NamingError::Changed(_)
-                | NamingError::NotLinked(_))
+                | NamingError::NotLinked(_)
+                | NamingError::RestoreFirst { .. }
+                | NamingError::UnsupportedFolder(_)
+                | NamingError::Linked(_))
         );
         if touched {
             self.reset_plans();
@@ -424,6 +432,9 @@ impl Shell {
             name: plan.name.clone(),
             backup: outcome.backup_path.display().to_string(),
             identity_changed: plan.identity_changes(),
+            plugins_txt_backup: outcome
+                .plugin_states_backup
+                .map(|p| p.display().to_string()),
             game_detection_failed: outcome.game_detection_failed,
         })
     }
@@ -475,6 +486,53 @@ impl Shell {
             renamed: outcome.renamed as u32,
             backup: outcome.backup.map(|p| p.display().to_string()),
         })
+    }
+}
+
+/// Whether the Load order page offers "Give it a name…" for an excluded plugin, and if not but
+/// a name is what it lacks, why not (shown in place of the button). Offered exactly when the
+/// plugin's only reason to be left out is the missing name and `plugin_naming::can_name` agrees
+/// (it isn't numbered, isn't a link, has no blank `name` line...).
+fn naming_offer(
+    naming: &plugin_naming::Paths,
+    snap: &Snapshot,
+    excluded: &load_order::Excluded,
+) -> (bool, Option<String>) {
+    if !excluded.reasons.contains(&ExcludeReason::NoPluginName)
+        || excluded
+            .reasons
+            .contains(&ExcludeReason::NotLinkedToCatalog)
+    {
+        return (false, None);
+    }
+    let Some(plugin) = snap.installed.iter().find(|p| p.folder == excluded.folder) else {
+        return (false, None);
+    };
+    match plugin_naming::can_name(naming, plugin) {
+        Ok(()) if excluded.reasons == [ExcludeReason::NoPluginName] => (true, None),
+        Ok(()) => (false, None),
+        Err(e) => (false, Some(e.to_string())),
+    }
+}
+
+/// The backend enforces what the page shows: only a plugin whose one reason to be left out of
+/// the order is its missing name can be given one.
+fn require_nameable(snap: &Snapshot, folder: &str) -> CmdResult<()> {
+    let layout = load_order::default_backend().layout(&snap.installed);
+    match layout.excluded.iter().find(|e| e.folder == folder) {
+        Some(e) if e.reasons == [ExcludeReason::NoPluginName] => Ok(()),
+        Some(e) if e.reasons.contains(&ExcludeReason::NotLinkedToCatalog) => {
+            Err(naming_err(NamingError::NotLinked(folder.to_string())))
+        }
+        Some(_) => Err(CmdError::invalid(format!(
+            "{folder:?} can't be ordered even with a name (see the reason on the Load order page), so the manager won't add one."
+        ))),
+        None if layout.ordered.iter().any(|p| p.folder == folder) => Err(CmdError::invalid(
+            format!("{folder:?} already has a name and can be ordered."),
+        )),
+        None => Err(CmdError::not_found(format!(
+            "The plugin folder {folder:?} is no longer in plugins/."
+        ))),
     }
 }
 
@@ -1125,6 +1183,69 @@ mod tests {
     }
 
     #[test]
+    fn a_numbered_folder_shows_why_and_must_be_restored_first() {
+        let w = World::new();
+        w.add("020-Anon", None);
+        let path = w.paths().records;
+        let mut records: InstallRecords = records::load(&path).unwrap();
+        records.get_mut("020-Anon").unwrap().original_folder = Some("Anon".into());
+        records::save(&path, &records).unwrap();
+        w.shell.load_order_set_enabled(true).unwrap();
+
+        let row = w.excluded("020-Anon");
+        assert!(row.still_renamed);
+        assert!(!row.can_name);
+        assert!(
+            row.name_hint
+                .as_deref()
+                .is_some_and(|h| h.contains("Restore original names")),
+            "{row:?}"
+        );
+        let err = w.shell.load_order_plan_name("020-Anon", None).unwrap_err();
+        assert!(err.message().contains("Restore original names"), "{err:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_linked_in_from_elsewhere_is_never_offered_a_name() {
+        let w = World::new();
+        let checkout = w._dir.path().join("checkout");
+        fs::create_dir_all(checkout.join("data")).unwrap();
+        std::os::unix::fs::symlink(&checkout, w.plugins().join("Linked")).unwrap();
+        w.add_by_hand("Linked", None); // a record (it was linked to the catalog)
+        w.shell.load_order_set_enabled(true).unwrap();
+
+        let row = w.excluded("Linked");
+        assert!(!row.can_name);
+        assert!(row.name_hint.as_deref().is_some_and(|h| h.contains("link")));
+        assert!(w.shell.load_order_plan_name("Linked", None).is_err());
+        assert!(!checkout.join("plugin.txt").exists());
+    }
+
+    // Unix only: Windows can't have a folder whose name ends in a dot.
+    #[cfg(unix)]
+    #[test]
+    fn the_backend_refuses_what_the_page_does_not_offer() {
+        let w = World::new();
+        w.add("Odd.", None); // left out for its folder name too
+        w.add("Alpha", Some("Alpha P"));
+        w.shell.load_order_set_enabled(true).unwrap();
+        let row = w.excluded("Odd.");
+        assert!(!row.can_name);
+        for folder in ["Odd.", "Alpha", "Gone"] {
+            let result = w.shell.load_order_plan_name(folder, None);
+            assert!(
+                matches!(
+                    result,
+                    Err(CmdError::Invalid { .. } | CmdError::NotFound { .. })
+                ),
+                "{folder}: {result:?}"
+            );
+        }
+        assert_eq!(w.plugin_txt("Odd."), None);
+    }
+
+    #[test]
     fn a_blank_name_line_is_explained_instead_of_guessed_at() {
         let w = World::new();
         w.add("Anon", None);
@@ -1133,6 +1254,14 @@ mod tests {
         let err = w.shell.load_order_plan_name("Anon", None).unwrap_err();
         assert!(matches!(err, CmdError::Invalid { .. }));
         assert!(err.message().contains("by hand"), "{err:?}");
+        // The page says so instead of offering the button.
+        let row = w.excluded("Anon");
+        assert!(!row.can_name);
+        assert!(
+            row.name_hint
+                .as_deref()
+                .is_some_and(|h| h.contains("by hand"))
+        );
     }
 
     #[test]
@@ -1301,6 +1430,7 @@ mod tests {
             let state = call("load_order_state", serde_json::json!({})).unwrap();
             assert_eq!(state["excluded"][0]["folder"], "Anon");
             assert_eq!(state["excluded"][0]["canName"], true);
+            assert_eq!(state["excluded"][0]["nameHint"], serde_json::Value::Null);
 
             let typed = call(
                 "load_order_plan_name",
@@ -1333,8 +1463,10 @@ mod tests {
                     "folder",
                     "identityChanges",
                     "line",
+                    "lineAtEnd",
                     "name",
                     "oldIdentity",
+                    "pluginsTxtBackup",
                     "profiles",
                     "token"
                 ]
@@ -1356,6 +1488,7 @@ mod tests {
             .unwrap();
             assert_eq!(done["name"], "Anon");
             assert_eq!(done["identityChanged"], false);
+            assert_eq!(done["pluginsTxtBackup"], serde_json::Value::Null);
             assert_eq!(done["gameDetectionFailed"], false);
             assert!(
                 done["backup"]

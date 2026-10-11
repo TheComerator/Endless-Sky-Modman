@@ -1197,6 +1197,9 @@ impl Shell {
         states: &PluginStates,
         steps: &[StepView],
     ) -> CmdResult<CommitView> {
+        // Same lock and refusal as the core's commits (an unfinished load-order renaming or
+        // naming must be finished first).
+        let _guard = manager::begin_change(&paths.records)?;
         let game = (self.deps.detect_game)();
         let mut store = ProfileStore::load(&paths.profiles)?;
         store.set_active(name)?;
