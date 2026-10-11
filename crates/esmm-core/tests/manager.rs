@@ -955,6 +955,8 @@ fn updating_a_nameless_plugin_in_a_hand_named_folder_is_checked_under_that_folde
     assert_eq!(world.records()["Foo-1.2"].identity, "Foo-1.2");
 }
 
+// Unix only: Windows can't have a folder whose name ends in a dot (it drops the dot).
+#[cfg(unix)]
 #[test]
 fn a_folder_name_the_installer_would_not_produce_keeps_the_old_update_behaviour() {
     // "Odd." (a trailing dot) can't be installed into, so the update goes to the catalog's name.
