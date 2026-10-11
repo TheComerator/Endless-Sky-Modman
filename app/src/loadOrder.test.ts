@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 
+import type { LoadOrderNamePlanView } from "./bindings/LoadOrderNamePlanView";
 import type { LoadOrderWinnerChange } from "./bindings/LoadOrderWinnerChange";
 import {
   describeDependencyNote,
   describeExclusion,
   describeGroup,
+  describeNameConsequences,
+  describeNameDependent,
+  describeNameWrite,
   describeSuggestion,
   effectiveOrder,
   formatNumber,
@@ -110,6 +114,8 @@ describe("describeExclusion", () => {
     expect(describeExclusion(["unsupportedFolderName"], false)).toContain("folder name");
     expect(describeExclusion(["noPluginName", "notLinkedToCatalog"], false)).toContain("added by hand");
     expect(describeExclusion(["noPluginName"], true)).toContain("Restore original names");
+    expect(describeExclusion(["noPluginName"], false)).not.toContain("Give it a name");
+    expect(describeExclusion(["noPluginName"], false, true)).toContain("Give it a name");
   });
 });
 
@@ -142,5 +148,51 @@ describe("describeSuggestion", () => {
   it("uses the right verb for one or many", () => {
     expect(describeSuggestion(1)).toContain("1 requirement loads first");
     expect(describeSuggestion(3)).toContain("3 requirements load first");
+  });
+});
+
+const namePlan = (overrides: Partial<LoadOrderNamePlanView> = {}): LoadOrderNamePlanView => ({
+  folder: "Foo",
+  name: "Foo",
+  oldIdentity: "Foo",
+  line: 'name "Foo"',
+  createsFile: false,
+  backup: "/data/plugin-txt-backups/Foo.plugin.txt",
+  identityChanges: false,
+  enabled: true,
+  profiles: [],
+  dependents: [],
+  token: "t",
+  ...overrides,
+});
+
+describe("naming a plugin", () => {
+  it("says nothing else changes when the folder name is used", () => {
+    expect(describeNameConsequences(namePlan())).toEqual([]);
+  });
+
+  it("lists what moves to a typed name, and that an off plugin stays off", () => {
+    const lines = describeNameConsequences(
+      namePlan({ name: "Foo Deluxe", identityChanges: true, enabled: false, profiles: ["Main", "Lite"] }),
+    );
+    expect(lines[0]).toBe('The game will call it "Foo Deluxe" instead of "Foo".');
+    expect(lines.join(" ")).toContain("switched off and stays off");
+    expect(lines.join(" ")).toContain("The 2 profiles that include it switch to the new name: Main, Lite.");
+    expect(lines.join(" ")).toContain("record");
+    const on = describeNameConsequences(namePlan({ name: "Bar", identityChanges: true, profiles: ["Main"] }));
+    expect(on.join(" ")).toContain("switched on and stays on");
+    expect(on.join(" ")).toContain("The profile that include");
+  });
+
+  it("explains each kind of mention by another plugin", () => {
+    expect(describeNameDependent({ plugin: "Dep", relation: "requires" })).toContain("Dep requires it by its old name");
+    expect(describeNameDependent({ plugin: "Opt", relation: "optional" })).toContain("optional");
+    expect(describeNameDependent({ plugin: "Rival", relation: "conflicts" })).toContain("conflict");
+  });
+
+  it("says where the line goes and where the copy is kept", () => {
+    expect(describeNameWrite(namePlan())).toContain("top of its plugin.txt");
+    expect(describeNameWrite(namePlan())).toContain("/data/plugin-txt-backups/Foo.plugin.txt");
+    expect(describeNameWrite(namePlan({ createsFile: true }))).toContain("creates one");
   });
 });

@@ -8,6 +8,8 @@ import type { CommitView } from "./bindings/CommitView";
 import type { GameProcessView } from "./bindings/GameProcessView";
 import type { InstallsView } from "./bindings/InstallsView";
 import type { LoadOrderCommitView } from "./bindings/LoadOrderCommitView"; // load order
+import type { LoadOrderNameCommitView } from "./bindings/LoadOrderNameCommitView"; // load order
+import type { LoadOrderNamePlanView } from "./bindings/LoadOrderNamePlanView"; // load order
 import type { LoadOrderPlanView } from "./bindings/LoadOrderPlanView"; // load order
 import type { LoadOrderPreview } from "./bindings/LoadOrderPreview"; // load order
 import type { LoadOrderState } from "./bindings/LoadOrderState"; // load order
@@ -65,6 +67,11 @@ export const api = {
   loadOrderCommitApply: (wanted: string[], token: string) =>
     invoke<LoadOrderCommitView>("load_order_commit_apply", { wanted, token }),
   loadOrderCommitRestore: (token: string) => invoke<LoadOrderCommitView>("load_order_commit_restore", { token }),
+  /** `name` is what the user typed; null means "use the folder name". */
+  loadOrderPlanName: (folder: string, name: string | null) =>
+    invoke<LoadOrderNamePlanView>("load_order_plan_name", { folder, name }),
+  loadOrderCommitName: (folder: string, name: string | null, token: string) =>
+    invoke<LoadOrderNameCommitView>("load_order_commit_name", { folder, name, token }),
 };
 
 /** Every command rejects with a `CmdError`; Tauri's own argument errors arrive as strings. */
