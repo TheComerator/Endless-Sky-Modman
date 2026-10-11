@@ -39,6 +39,9 @@ use crate::fetcher::{PlanFetcher, ProgressSink};
 use crate::settings::{CustomInstall, InstallPaths, Settings, install_key};
 use crate::views::*;
 
+// load order: the optional load-order feature's shell commands (delete with the feature).
+mod load_order;
+
 type CatalogFn = dyn Fn(&Path) -> Result<CatalogFetch, CatalogError> + Send + Sync;
 type IconFn = dyn Fn(&Path, &str) -> Result<PathBuf, CatalogError> + Send + Sync;
 
@@ -589,6 +592,8 @@ impl Shell {
     fn snapshot(&self) -> CmdResult<(Selected, Snapshot)> {
         let selected = self.selected().ok_or_else(CmdError::no_install)?;
         let paths = InstallPaths::new(&self.deps.data_dir, &selected.install.config_dir);
+        // load order: finish or undo an interrupted renaming run before anything is scanned.
+        self.recover_interrupted(&paths);
         let records = records::load(&paths.records)?;
         let installed = manager::scan_installed(
             &install::plugins_dir(&selected.install.config_dir),
@@ -711,6 +716,7 @@ impl Shell {
                 version: String::new(),
                 source_url: entry.url.clone(),
                 sha256: String::new(),
+                original_folder: None,
             },
         );
         records::save(&snap.paths.records, &records)?;

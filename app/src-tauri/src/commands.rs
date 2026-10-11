@@ -12,6 +12,7 @@ use tauri::State;
 use tokio::sync::oneshot;
 
 use crate::error::{CmdError, CmdResult};
+use crate::load_order_views::*; // load order
 use crate::shell::{Shell, Ticket};
 use crate::views::*;
 
@@ -319,4 +320,86 @@ pub async fn update_active_profile(state: State<'_, AppState>) -> CmdResult<()> 
 #[tauri::command]
 pub async fn delete_profile(state: State<'_, AppState>, name: String) -> CmdResult<()> {
     blocking(&state, "delete_profile", move |s| s.delete_profile(&name)).await
+}
+
+// --- Load order (optional feature; delete this block with it) ----------------------
+
+#[tauri::command]
+pub async fn load_order_state(state: State<'_, AppState>) -> CmdResult<LoadOrderState> {
+    blocking(&state, "load_order_state", |s| s.load_order_state()).await
+}
+
+#[tauri::command]
+pub async fn load_order_set_enabled(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> CmdResult<LoadOrderSwitch> {
+    blocking(&state, "load_order_set_enabled", move |s| {
+        s.load_order_set_enabled(enabled)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn load_order_suggest(
+    state: State<'_, AppState>,
+    wanted: Vec<String>,
+) -> CmdResult<LoadOrderSuggestion> {
+    blocking(&state, "load_order_suggest", move |s| {
+        s.load_order_suggest(wanted)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn load_order_preview(
+    state: State<'_, AppState>,
+    wanted: Vec<String>,
+) -> CmdResult<LoadOrderPreview> {
+    blocking(&state, "load_order_preview", move |s| {
+        s.load_order_preview(wanted)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn load_order_plan_apply(
+    state: State<'_, AppState>,
+    wanted: Vec<String>,
+) -> CmdResult<LoadOrderPlanView> {
+    blocking(&state, "load_order_plan_apply", move |s| {
+        s.load_order_plan_apply(wanted)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn load_order_plan_restore(state: State<'_, AppState>) -> CmdResult<LoadOrderPlanView> {
+    blocking(&state, "load_order_plan_restore", |s| {
+        s.load_order_plan_restore()
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn load_order_commit_apply(
+    state: State<'_, AppState>,
+    wanted: Vec<String>,
+    token: String,
+) -> CmdResult<LoadOrderCommitView> {
+    blocking(&state, "load_order_commit_apply", move |s| {
+        s.load_order_commit_apply(wanted, &token)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn load_order_commit_restore(
+    state: State<'_, AppState>,
+    token: String,
+) -> CmdResult<LoadOrderCommitView> {
+    blocking(&state, "load_order_commit_restore", move |s| {
+        s.load_order_commit_restore(&token)
+    })
+    .await
 }
