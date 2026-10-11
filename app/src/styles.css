@@ -916,3 +916,46 @@ ul.plain li + li {
 .advanced summary {
   cursor: pointer;
 }
+
+/* --- Load order: layout fixes found in a browser test (delete with the feature) -------- */
+
+.row-actions button[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.row-actions button[aria-disabled="true"]:hover {
+  border-color: var(--border);
+}
+
+/* Keep the list from jumping when the "who wins" summary appears. */
+.preview-slot {
+  min-height: 52px;
+}
+
+.preview-banner summary {
+  cursor: pointer;
+}
+
+.order-excluded {
+  margin-top: 28px;
+}
+
+/* A dimmed (switched-off) plugin stays readable. */
+.row.order-row.disabled .row-text {
+  opacity: 0.8;
+}
+
+.steps-scroll,
+.changes-scroll {
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+/* The buttons stay in view however long the review is. */
+.modal-actions-sticky {
+  position: sticky;
+  bottom: -20px;
+  padding: 12px 0 0;
+  background: var(--panel);
+}

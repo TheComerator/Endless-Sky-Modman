@@ -13,13 +13,39 @@ export function moveItem<T>(list: readonly T[], index: number, delta: -1 | 1): T
   return next;
 }
 
+/** A copy of `list` with the item at `index` moved to the very top or the very bottom. */
+export function moveToEnd<T>(list: readonly T[], index: number, end: "top" | "bottom"): T[] {
+  if (index < 0 || index >= list.length) return [...list];
+  const rest = list.filter((_, i) => i !== index);
+  return end === "top" ? [list[index], ...rest] : [...rest, list[index]];
+}
+
 export function sameOrder(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((item, i) => item === b[i]);
 }
 
-/** "010" for a folder prefix number, "new" for a plugin that has none yet. */
+/** "010" for a folder prefix number, "none" for a plugin that has no number yet. */
 export function formatNumber(n: number | null): string {
-  return n === null ? "new" : String(n).padStart(3, "0");
+  return n === null ? "none" : String(n).padStart(3, "0");
+}
+
+/** True when `a` and `b` hold the same items, in any order. */
+export function samePlugins(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && new Set(a).size === a.length && b.every((item) => a.includes(item));
+}
+
+/**
+ * The order to show: the user's unsaved arrangement (`draft`) while it still covers exactly the
+ * plugins that are installed, otherwise the order saved on disk. A draft that no longer fits
+ * (a plugin was added or removed meanwhile) is dropped rather than shown wrong.
+ */
+export function effectiveOrder(draft: readonly string[] | null, saved: readonly string[]): readonly string[] {
+  return draft && samePlugins(draft, saved) ? draft : saved;
+}
+
+/** "1 requirement loads first" / "3 requirements load first". */
+export function describeSuggestion(fixed: number): string {
+  return `Moved plugins so ${fixed} requirement${fixed === 1 ? " loads" : "s load"} first. Nothing changes until you apply.`;
 }
 
 export interface WinnerGroup {
@@ -56,8 +82,8 @@ export function describeGroup(group: WinnerGroup): string {
 export function describeExclusion(reasons: readonly LoadOrderExcludeReason[], stillRenamed: boolean): string {
   const parts: string[] = reasons.map((r) =>
     r === "noPluginName"
-      ? "Its plugin.txt has no name, so renaming its folder would make the game see a different plugin."
-      : "It was put here by hand, and the manager only renames plugins it installed itself.",
+      ? "Its plugin.txt (the plugin's info file) has no name, so renaming its folder would make the game see a different plugin."
+      : "It was put here by hand, and the manager only renames plugins it installed itself. \"Reinstall latest\" on the Installed page lets the manager take it over.",
   );
   if (stillRenamed) parts.push("Its folder still has a number from earlier; use Restore original names.");
   return parts.join(" ");

@@ -5,10 +5,14 @@ import {
   describeDependencyNote,
   describeExclusion,
   describeGroup,
+  describeSuggestion,
+  effectiveOrder,
   formatNumber,
   groupWinnerChanges,
   moveItem,
+  moveToEnd,
   sameOrder,
+  samePlugins,
 } from "./loadOrder";
 
 const change = (item: string, was: string | null, now: string | null): LoadOrderWinnerChange => ({
@@ -34,6 +38,18 @@ describe("moveItem", () => {
   });
 });
 
+describe("moveToEnd", () => {
+  it("sends one item to the top or the bottom and keeps the rest in order", () => {
+    const list = ["a", "b", "c", "d"];
+    expect(moveToEnd(list, 2, "top")).toEqual(["c", "a", "b", "d"]);
+    expect(moveToEnd(list, 1, "bottom")).toEqual(["a", "c", "d", "b"]);
+    expect(moveToEnd(list, 0, "top")).toEqual(list);
+    expect(moveToEnd(list, 3, "bottom")).toEqual(list);
+    expect(moveToEnd(list, 9, "top")).toEqual(list);
+    expect(list).toEqual(["a", "b", "c", "d"]);
+  });
+});
+
 describe("sameOrder", () => {
   it("compares position by position", () => {
     expect(sameOrder(["a", "b"], ["a", "b"])).toBe(true);
@@ -47,7 +63,7 @@ describe("formatNumber", () => {
     expect(formatNumber(10)).toBe("010");
     expect(formatNumber(5)).toBe("005");
     expect(formatNumber(990)).toBe("990");
-    expect(formatNumber(null)).toBe("new");
+    expect(formatNumber(null)).toBe("none");
   });
 });
 
@@ -91,6 +107,7 @@ describe("describeExclusion", () => {
   it("explains each reason, and a leftover prefix", () => {
     expect(describeExclusion(["noPluginName"], false)).toContain("no name");
     expect(describeExclusion(["notInstalledByManager"], false)).toContain("by hand");
+    expect(describeExclusion(["notInstalledByManager"], false)).toContain("Reinstall latest");
     expect(describeExclusion(["noPluginName", "notInstalledByManager"], false)).toContain("by hand");
     expect(describeExclusion(["noPluginName"], true)).toContain("Restore original names");
   });
@@ -99,5 +116,31 @@ describe("describeExclusion", () => {
 describe("describeDependencyNote", () => {
   it("names the plugin and what it requires", () => {
     expect(describeDependencyNote({ plugin: "A", requires: "B" })).toBe("A loads before B, which it requires.");
+  });
+});
+
+describe("samePlugins and effectiveOrder", () => {
+  it("compares as sets of plugins", () => {
+    expect(samePlugins(["a", "b"], ["b", "a"])).toBe(true);
+    expect(samePlugins(["a", "b"], ["a", "c"])).toBe(false);
+    expect(samePlugins(["a", "a"], ["a", "b"])).toBe(false);
+    expect(samePlugins([], [])).toBe(true);
+  });
+
+  it("keeps the user's unsaved order only while it fits the installed plugins", () => {
+    const saved = ["a", "b", "c"];
+    const draft = ["c", "a", "b"];
+    expect(effectiveOrder(draft, saved)).toBe(draft);
+    expect(effectiveOrder(null, saved)).toBe(saved);
+    // A plugin was removed or added meanwhile: the draft no longer fits.
+    expect(effectiveOrder(draft, ["a", "b"])).toEqual(["a", "b"]);
+    expect(effectiveOrder(draft, ["a", "b", "c", "d"])).toEqual(["a", "b", "c", "d"]);
+  });
+});
+
+describe("describeSuggestion", () => {
+  it("uses the right verb for one or many", () => {
+    expect(describeSuggestion(1)).toContain("1 requirement loads first");
+    expect(describeSuggestion(3)).toContain("3 requirements load first");
   });
 });
