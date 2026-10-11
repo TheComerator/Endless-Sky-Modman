@@ -9,6 +9,8 @@ import type { Notify } from "./useToasts";
 
 export function useLoadOrder(notify: Notify) {
   const [state, setState] = useState<LoadOrderState | null>(null);
+  /** The user's unsaved arrangement; kept here so leaving the page and coming back doesn't lose it. */
+  const [draft, setDraft] = useState<string[] | null>(null);
   const notifyRef = useRef(notify);
   notifyRef.current = notify;
 
@@ -17,8 +19,8 @@ export function useLoadOrder(notify: Notify) {
       const next = await api.loadOrderState();
       setState(next);
       return next;
-    } catch (e) {
-      notifyRef.current("error", asCmdError(e).message);
+    } catch {
+      // The main state banner already reports a broken install; no second message here.
       return null;
     }
   }, []);
@@ -45,7 +47,7 @@ export function useLoadOrder(notify: Notify) {
     [refresh],
   );
 
-  return { state, enabled: state?.enabled ?? false, refresh, setEnabled };
+  return { state, enabled: state?.enabled ?? false, refresh, setEnabled, draft, setDraft };
 }
 
 export type LoadOrder = ReturnType<typeof useLoadOrder>;

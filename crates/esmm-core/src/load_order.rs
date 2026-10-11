@@ -40,15 +40,34 @@
 //!   and `app/src/loadOrder.test.ts`
 //! * `app/src/bindings/LoadOrder*.ts` (generated; `cargo test` no longer writes them)
 //!
-//! Lines to remove (each is marked `load order` or `load_order` where it appears):
+//! Lines to remove (most are marked `load order` or `load_order` where they appear):
 //! * `crates/esmm-core/src/lib.rs`: `pub mod load_order;`
 //! * `app/src-tauri/src/lib.rs`: `mod load_order_views;` and the `commands::load_order_*` entries
-//! * `app/src-tauri/src/shell.rs`: `mod load_order;` and the `recover_interrupted` call in `snapshot`
-//! * `app/src-tauri/src/commands.rs`: the "Load order" block of command wrappers and its `use`
-//! * `app/src-tauri/src/settings.rs`: the `manage_load_order` field (and its test); an old
-//!   `settings.json` that still contains it is ignored, nothing breaks
-//! * `app/src/App.tsx`, `app/src/api.ts`, `app/src/views/SettingsView.tsx`, `app/src/styles.css`:
-//!   the Load order tab, API entries, Settings section and the CSS block
+//! * `app/src-tauri/src/shell.rs`: the `// load order` comment and `mod load_order;`, and the
+//!   `recover_interrupted` call (with its comment) in `snapshot`
+//! * `app/src-tauri/src/commands.rs`: the `use crate::load_order_views::*;` line and the "Load
+//!   order" block of command wrappers at the end of the file
+//! * `app/src-tauri/src/settings.rs`: the `manage_load_order` field, the test
+//!   `load_order_management_is_off_unless_the_settings_file_says_otherwise`, and the
+//!   `manage_load_order: true,` line in `settings_round_trip_and_tolerate_corruption`. An old
+//!   `settings.json` that still contains the setting is simply ignored.
+//! * `app/src/App.tsx`: the imports, `"loadOrder"` in `type Tab`, the `useLoadOrder` line, the
+//!   tab-list entry, the effect that leaves the page when the switch is turned off, the
+//!   `loadOrder` page render and the `loadOrder` prop passed to `SettingsView`
+//! * `app/src/views/SettingsView.tsx`: the imports, the `loadOrder` prop (and its type) and
+//!   `<LoadOrderSettings .../>`
+//! * `app/src/api.ts`: the `LoadOrder*` type imports and the `loadOrder*` entries
+//! * `app/src/styles.css`: the "Load order" block at the end
+//!
+//! Then run `cargo fmt` (deleting the lines above leaves a stray blank line in `shell.rs`) and
+//! delete the empty `app/src-tauri/src/shell/` folder. This was checked in a throwaway copy:
+//! with exactly these steps `cargo fmt --check`, `cargo clippy --all-targets`,
+//! `cargo test --workspace`, `npm run build` and `npm test` all pass.
+//!
+//! Documentation is not code and nothing breaks if it stays, but if the feature is removed for
+//! good, also deal with decision M and roadmap item 1d in `CLAUDE.md`, the README bullets,
+//! `docs/proposals/endless-sky-load-order-request.md` and
+//! `project-memory/prompts/load-order-cloud-session.md`.
 //!
 //! The generic `original_folder` field on `InstallRecord` and the "update in place" rule in
 //! `manager::plan_update` are harmless without the feature and can stay.
@@ -97,7 +116,7 @@ pub enum LoadOrderError {
     #[error("Endless Sky is running; close it first")]
     GameRunning,
     #[error(
-        "An earlier reordering was interrupted and has not been finished yet. Restart the manager to finish or undo it."
+        "An earlier reordering was interrupted and is still being tidied up. The manager finishes or undoes it by itself the next time it reads your plugins; try again in a moment."
     )]
     JournalPending,
     #[error("The plugin list changed since this order was made. Reload the Load order page.")]
@@ -128,7 +147,7 @@ pub enum LoadOrderError {
     Changed(String),
     #[error(
         "Couldn't rename {from:?} to {to:?}: {error}. {}",
-        if *.rolled_back { "Everything already renamed was put back." } else { "Some folders could not be put back; restart the manager to finish or undo the change." }
+        if *.rolled_back { "Everything already renamed was put back." } else { "Some folders could not be put back, or the manager could not tidy up after itself; restart the manager to finish or undo the change." }
     )]
     RenameFailed {
         from: String,
@@ -886,6 +905,11 @@ impl LoadOrderBackend for FolderPrefixBackend {
 
 type RenameFn<'a> = &'a dyn Fn(&Path, &Path) -> io::Result<()>;
 
+/// A single folder name: the installer's own rules, so no separators, no `..`, nothing odd.
+fn is_safe_name(name: &str) -> bool {
+    !name.is_empty() && crate::install::sanitize_folder_name(name) == name
+}
+
 fn lower(name: &str) -> String {
     name.to_lowercase()
 }
@@ -921,15 +945,24 @@ fn check_targets(
                 length: rename.to.len(),
             });
         }
+        // Names come from folders and from records.json; a name with a path separator or `..`
+        // in it must never be joined onto plugins/.
+        if !is_safe_name(&rename.from) || !is_safe_name(&rename.to) {
+            return Err(LoadOrderError::Records(format!(
+                "{:?} or {:?} isn't a plain folder name",
+                rename.from, rename.to
+            )));
+        }
         if let Some(existing) = existing.get(&lower(&rename.to)) {
             return Err(LoadOrderError::Collision {
                 name: rename.to.clone(),
                 existing: existing.clone(),
             });
         }
-        // New names that differ only by case are fine on a filesystem that tells them apart
-        // (the originals could only have coexisted there); one that doesn't would already have
-        // refused above, because the first of them would exist by then.
+        // Two new names that differ only by case are accepted here: the originals could only
+        // have coexisted on a filesystem that tells them apart, and there they can coexist
+        // again. (On one that doesn't, the second rename would fail at commit and everything
+        // would be put back; that cannot arise from a restore of names that coexisted.)
         if let Some(other) = targets.insert(rename.to.clone(), &rename.from) {
             return Err(LoadOrderError::Collision {
                 name: rename.to.clone(),
@@ -1006,11 +1039,6 @@ fn write_journal(path: &Path, renames: &[Rename]) -> Result<(), LoadOrderError> 
     Ok(())
 }
 
-fn remove_journal(path: &Path) {
-    // If it can't be removed, the next start finds nothing left to do and removes it then.
-    let _ = fs::remove_file(path);
-}
-
 /// Gets rid of a journal whose renames have all been undone. If it can't be deleted it is
 /// emptied instead, so a later recovery can never replay renames that were taken back.
 fn clear_journal(path: &Path) -> bool {
@@ -1018,6 +1046,18 @@ fn clear_journal(path: &Path) -> bool {
         return true;
     }
     write_journal(path, &[]).is_ok()
+}
+
+/// Clears the journal of a run that is over (finished or undone). A journal that lingers would
+/// be replayed by the next recovery, so failing to clear it is an error, not something to ignore.
+fn finish_journal(path: &Path) -> Result<(), LoadOrderError> {
+    if clear_journal(path) {
+        Ok(())
+    } else {
+        Err(LoadOrderError::Unrecoverable(
+            "the change is complete, but its journal couldn't be removed".into(),
+        ))
+    }
 }
 
 /// One commit or recovery at a time, in the whole process: a recovery must never replay a
@@ -1138,9 +1178,24 @@ fn commit_with(
     write_journal(&journal_path, &plan.renames)?;
 
     for (done, r) in plan.renames.iter().enumerate() {
-        if let Err(e) = rename(&plugins.join(&r.from), &plugins.join(&r.to)) {
-            let (_, all_back) = undo(&plugins, &plan.renames[..done], rename);
+        // Looked at again just before each rename: on Linux, renaming onto an empty folder
+        // that appeared in the meantime would silently replace it.
+        let outcome = if exists(&plugins.join(&r.to)) {
+            Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "a folder with that name appeared",
+            ))
+        } else {
+            rename(&plugins.join(&r.from), &plugins.join(&r.to))
+        };
+        if let Err(e) = outcome {
+            // Includes the one that just failed, in case it took effect despite the error.
+            let (_, all_back) = undo(&plugins, &plan.renames[..=done], rename);
             let rolled_back = all_back && clear_journal(&journal_path);
+            if !all_back {
+                // Leave the records following whatever is on disk; the journal stays for recovery.
+                let _ = sync_records(paths, &plan.renames);
+            }
             return Err(LoadOrderError::RenameFailed {
                 from: r.from.clone(),
                 to: r.to.clone(),
@@ -1152,7 +1207,7 @@ fn commit_with(
     // The journal stays until the records agree with the disk, so a failure here is finished
     // by `recover` at the next start.
     sync_records(paths, &plan.renames)?;
-    remove_journal(&journal_path);
+    finish_journal(&journal_path)?;
     tracing::info!(
         renamed = plan.renames.len(),
         kind = ?plan.kind,
@@ -1188,6 +1243,15 @@ fn recover_with(
     }
     let plugins = paths.plugins_dir();
     let renames = &journal.renames;
+    if let Some(r) = renames
+        .iter()
+        .find(|r| !is_safe_name(&r.from) || !is_safe_name(&r.to))
+    {
+        return Err(LoadOrderError::Journal(format!(
+            "it names {:?} and {:?}, which aren't plain folder names",
+            r.from, r.to
+        )));
+    }
 
     // First try to carry the run through to the end.
     let mut problem: Option<String> = None;
@@ -1223,7 +1287,7 @@ fn recover_with(
     match problem {
         None => {
             sync_records(paths, renames)?;
-            remove_journal(&journal_path);
+            finish_journal(&journal_path)?;
             tracing::info!(moved, "interrupted load-order run finished");
             Ok(Recovery::Finished { renames: moved })
         }
@@ -1231,10 +1295,12 @@ fn recover_with(
             // It can't be finished, so undo it.
             let (back, all_back) = undo(&plugins, renames, rename);
             if !all_back {
+                // Keep the records in step with the disk, but leave the journal for another try.
+                let _ = sync_records(paths, renames);
                 return Err(LoadOrderError::Unrecoverable(reason));
             }
             sync_records(paths, renames)?;
-            remove_journal(&journal_path);
+            finish_journal(&journal_path)?;
             tracing::warn!(%reason, "interrupted load-order run rolled back");
             Ok(Recovery::RolledBack {
                 renames: back,
@@ -1345,6 +1411,11 @@ mod tests {
 
         fn journal_exists(&self) -> bool {
             self.paths().journal_path().exists()
+        }
+
+        /// Whether anything called `outside` appeared next to `plugins/`.
+        fn dir_outside_exists(&self) -> bool {
+            self.config.join("outside").exists()
         }
     }
 
@@ -2481,5 +2552,87 @@ mod tests {
             .commit(&w.paths(), &plan, GameProcess::NotRunning)
             .unwrap();
         assert_eq!(w.folders(), ["Foo", "foo"]);
+    }
+
+    #[test]
+    fn when_the_adopted_record_is_at_the_old_name_the_plugins_own_still_wins() {
+        // The mirror of the recovery case: rolling back, the plugin's own record sits at the new
+        // name and a hash-less (adopted) record has appeared at the old one.
+        let w = World::new();
+        w.add("Alpha", Some("Alpha P"), &[]);
+        w.set_record("Alpha", "Alpha P", "", None);
+        w.set_record("010-Alpha", "Alpha P", "hash", Some("Alpha"));
+        let rename = Rename {
+            from: "Alpha".into(),
+            to: "010-Alpha".into(),
+            identity: "Alpha P".into(),
+            from_original: None,
+            to_original: Some("Alpha".into()),
+        };
+        // On disk only the old name exists, so the records follow it.
+        sync_records(&w.paths(), &[rename]).unwrap();
+        let records = w.records();
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records["Alpha"].sha256, "hash",
+            "the downloaded plugin's record won"
+        );
+        assert_eq!(records["Alpha"].original_folder, None);
+    }
+
+    #[test]
+    fn a_rename_that_finds_its_target_taken_just_before_it_runs_puts_everything_back() {
+        let w = World::new();
+        for n in ["Alpha", "Beta"] {
+            w.add(n, Some(n), &[]);
+        }
+        let plan = backend()
+            .plan_apply(&w.paths(), &w.installed(), &strs(&["Alpha", "Beta"]))
+            .unwrap();
+        let plugins = w.plugins();
+        // While the first folder is being renamed, an (empty) folder appears where the second
+        // one is going. On Linux a plain rename would silently replace it.
+        let rename = |from: &Path, to: &Path| {
+            fs::rename(from, to)?;
+            fs::create_dir_all(plugins.join("020-Beta"))
+        };
+        let err = commit_with(&w.paths(), &plan, GameProcess::NotRunning, &rename).unwrap_err();
+        assert!(
+            matches!(&err, LoadOrderError::RenameFailed { rolled_back: true, to, .. } if to == "020-Beta"),
+            "{err:?}"
+        );
+        assert_eq!(w.folders(), ["020-Beta", "Alpha", "Beta"]);
+        assert!(!w.journal_exists());
+    }
+
+    #[test]
+    fn names_that_are_not_plain_folder_names_are_never_joined_onto_plugins() {
+        let w = World::new();
+        w.add("Alpha", Some("Alpha"), &[]);
+        // A journal (hand-edited or corrupt) that points outside plugins/.
+        let evil = Rename {
+            from: "Alpha".into(),
+            to: "../outside".into(),
+            identity: "Alpha".into(),
+            from_original: None,
+            to_original: Some("Alpha".into()),
+        };
+        write_journal(&w.paths().journal_path(), &[evil]).unwrap();
+        assert!(matches!(
+            backend().recover(&w.paths(), GameProcess::NotRunning),
+            Err(LoadOrderError::Journal(m)) if m.contains("plain folder names")
+        ));
+        assert_eq!(w.folders(), ["Alpha"]);
+        assert!(!w.dir_outside_exists());
+        fs::remove_file(w.paths().journal_path()).unwrap();
+
+        // A record whose original name is a path: restoring refuses instead of moving anything.
+        apply_all(&w, &["Alpha"]);
+        w.set_record("010-Alpha", "Alpha", "hash", Some("../elsewhere"));
+        let err = backend()
+            .plan_restore(&w.paths(), &w.installed())
+            .unwrap_err();
+        assert!(matches!(err, LoadOrderError::Records(_)), "{err:?}");
+        assert_eq!(w.folders(), ["010-Alpha"]);
     }
 }
