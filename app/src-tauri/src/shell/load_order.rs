@@ -69,7 +69,9 @@ impl Shell {
     /// whenever the install is read, before any plugin folder is scanned, whether or not the
     /// feature is switched on: a half-done rename must never be left behind.
     pub(super) fn recover_interrupted(&self, paths: &InstallPaths) {
-        // Any command can reach this; the core serialises it against a commit in progress.
+        // Any command can reach this; the core serialises it against a load-order commit in
+        // progress (not against other writers of records.json: the window is narrow, and two
+        // manager windows at once are not guarded at all).
         let game = (self.deps.detect_game)();
         match load_order::default_backend().recover(&paths_of(paths), game) {
             Ok(Recovery::Nothing) => {}
