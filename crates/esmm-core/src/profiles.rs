@@ -383,6 +383,7 @@ mod tests {
             version: "v0.1.1".into(),
             source_url: "https://example.com/a.zip".into(),
             sha256: "ab".repeat(32),
+            original_folder: None,
         };
         InstallRecords::from([(record.folder.clone(), record)])
     }

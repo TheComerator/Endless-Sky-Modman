@@ -18,8 +18,14 @@ pub struct InstallRecord {
     pub identity: String,
     pub version: String,
     pub source_url: String,
-    /// Lowercase hex SHA-256 of the downloaded zip.
+    /// Lowercase hex SHA-256 of the downloaded zip. Empty for a plugin that was only adopted
+    /// (it was put in `plugins/` by hand, not downloaded by the manager).
     pub sha256: String,
+    /// The folder name this plugin had before the optional load-order feature renamed it
+    /// (`folder` is always the name on disk right now, and the key). `None` for a plugin that
+    /// was never renamed. Old record files without the field load as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_folder: Option<String>,
 }
 
 /// Keyed by installed folder name.
@@ -62,6 +68,7 @@ mod tests {
             version: "v0.1.1".into(),
             source_url: "https://example.com/a.zip".into(),
             sha256: "ab".repeat(32),
+            original_folder: None,
         };
         let mut records = InstallRecords::new();
         records.insert(record.folder.clone(), record);
