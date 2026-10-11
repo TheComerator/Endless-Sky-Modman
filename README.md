@@ -41,6 +41,7 @@ Import someone's shared profile and the manager lists the plugins you're missing
 - **Enable and disable** plugins without uninstalling them.
 - **Profiles**: save different sets of enabled plugins (a vanilla run, a heavy-mods run) and switch between them. If you toggle something in-game, the manager notices and offers to keep or restore your profile.
 - **Conflict and dependency checks** before every change, in plain language. If two plugins conflict, it offers to disable one instead of just refusing.
+- **Optional load order** *(coming in the next release; off by default, switch it on under Settings)*: the game loads plugins in the sorted order of their folder names, and a plugin loaded later wins where two of them change the same thing. This lets you pick the order, by adding a number prefix to the folders of plugins the manager installed (like `010-Some Plugin`), and one click puts the original names back. Plugins you added by hand are never renamed.
 - **Finds your game** whether it's from Steam (including Steam as a Flatpak), a standalone install, an AppImage, or a custom folder, and launches it for you.
 
 It does **not** manage the game itself (versions, multiple builds). If you want that, see [ESLauncher2](#how-it-differs-from-eslauncher2).
@@ -79,6 +80,7 @@ The manager is careful because it edits files your game reads:
 - It **backs up `plugins.txt`** before every write (`plugins.txt.esmm-bak` next to it) and writes atomically, so a crash can't leave a half-written file.
 - Downloads are **HTTPS only**, size-limited, and unzipped with protection against archives that try to write outside their folder.
 - Every change is **shown first and committed together**; a plugin is never left half-installed.
+- If you turn on the optional load order, it follows the same rules: nothing is renamed while the game runs, `plugins.txt` is first copied to `plugins.txt.esmm-load-order-bak`, and a journal (`load-order-journal.json`, in the manager's own folder) is written before the first rename, so a crash midway is finished or undone the next time the manager looks at your plugins.
 - The plugin list and update checks use the same official catalog the game's own plugin page uses. The only other thing the app contacts is GitHub, once at startup, to ask whether a newer version of the manager exists (it never installs anything without your click, and you can turn the check off under **Settings → Updates**). There is no telemetry and nothing about you or your plugins is sent anywhere.
 - **Updates to the manager itself** are only accepted if they're signed with this project's own key, so a tampered download is rejected.
 
