@@ -81,12 +81,16 @@
 //! `added_name`):
 //! * Files: `crates/esmm-core/src/plugin_naming.rs`, `crates/esmm-core/tests/plugin_naming.rs`
 //! * `crates/esmm-core/src/lib.rs`: `pub mod plugin_naming;`
-//! * `crates/esmm-core/src/manager.rs` (every piece is commented "plugin naming"): the
-//!   `use crate::plugin_naming::...` line; `expect_added_name` and its two calls (in
-//!   `stage_for_install`, which then returns no issue, and in `plan_update`, with
-//!   `naming_issue`); `decide_added_names`, `decide_added_name`, `write_added_names`,
-//!   `write_added_name` and every call to them; the `name_to_write` and `added_name` fields of
-//!   `StagedPlugin` (records are then built with `added_name: None`)
+//! * `crates/esmm-core/src/manager.rs`: the `use crate::plugin_naming::...` line; the "Plugin
+//!   naming hooks" block (from its banner to "End of the plugin naming hooks"); and each line
+//!   commented "Plugin naming" with the statement it describes: in `stage_for_install` the
+//!   `let issue = ...;` becomes `let issue = None;`; in `plan_update` delete
+//!   `let naming_issue = ...;` and `issues.extend(naming_issue);`; in `commit_inner` delete the
+//!   `put_back_added_names` call and make `let mut steps` a plain `let steps`; in
+//!   `commit_update_inner` and `commit_update_all_inner` delete the two lines under the comment
+//!   (`let mut plan... = ...;` and the call). Finally remove the `name_to_write` and
+//!   `added_name` fields of `StagedPlugin` (and their two lines in `stage_download`), and build
+//!   records with `added_name: None` instead of `staged.added_name` (five places).
 //! * `crates/esmm-core/src/resolve.rs`: `Issue::AddedNameCannotBeKept`;
 //!   `app/src-tauri/src/views.rs`: `IssueView::AddedNameCannotBeKept` and its line in
 //!   `From<&Issue>`; `app/src/format.ts`: the `addedNameCannotBeKept` case;
