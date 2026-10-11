@@ -341,8 +341,14 @@ pub async fn load_order_set_enabled(
 }
 
 #[tauri::command]
-pub async fn load_order_suggest(state: State<'_, AppState>) -> CmdResult<LoadOrderSuggestion> {
-    blocking(&state, "load_order_suggest", |s| s.load_order_suggest()).await
+pub async fn load_order_suggest(
+    state: State<'_, AppState>,
+    wanted: Vec<String>,
+) -> CmdResult<LoadOrderSuggestion> {
+    blocking(&state, "load_order_suggest", move |s| {
+        s.load_order_suggest(wanted)
+    })
+    .await
 }
 
 #[tauri::command]

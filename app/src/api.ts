@@ -58,7 +58,7 @@ export const api = {
   // load order (optional feature; delete with it)
   loadOrderState: () => invoke<LoadOrderState>("load_order_state"),
   loadOrderSetEnabled: (enabled: boolean) => invoke<LoadOrderSwitch>("load_order_set_enabled", { enabled }),
-  loadOrderSuggest: () => invoke<LoadOrderSuggestion>("load_order_suggest"),
+  loadOrderSuggest: (wanted: string[]) => invoke<LoadOrderSuggestion>("load_order_suggest", { wanted }),
   loadOrderPreview: (wanted: string[]) => invoke<LoadOrderPreview>("load_order_preview", { wanted }),
   loadOrderPlanApply: (wanted: string[]) => invoke<LoadOrderPlanView>("load_order_plan_apply", { wanted }),
   loadOrderPlanRestore: () => invoke<LoadOrderPlanView>("load_order_plan_restore"),

@@ -116,7 +116,7 @@ pub enum LoadOrderError {
     #[error("Endless Sky is running; close it first")]
     GameRunning,
     #[error(
-        "An earlier reordering was interrupted and has not been finished yet. Restart the manager to finish or undo it."
+        "An earlier reordering was interrupted and is still being tidied up. The manager finishes or undoes it by itself the next time it reads your plugins; try again in a moment."
     )]
     JournalPending,
     #[error("The plugin list changed since this order was made. Reload the Load order page.")]

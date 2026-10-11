@@ -18,6 +18,8 @@ use esmm_core::load_order::{
 };
 use esmm_core::manager::InstalledPlugin;
 use esmm_core::overlap::{self, PluginIndex};
+use std::collections::HashMap;
+
 use sha2::{Digest, Sha256};
 
 use super::{Shell, Snapshot, lock};
@@ -31,7 +33,10 @@ fn paths_of(paths: &InstallPaths) -> Paths<'_> {
 
 fn cmd_err(e: LoadOrderError) -> CmdError {
     match e {
-        LoadOrderError::GameRunning => CmdError::game_running(),
+        LoadOrderError::GameRunning => CmdError::GameRunning {
+            message: "Endless Sky is running. Close it first; plugin folders can't be renamed while it runs."
+                .into(),
+        },
         LoadOrderError::Io(m)
         | LoadOrderError::Records(m)
         | LoadOrderError::Journal(m)
@@ -40,11 +45,14 @@ fn cmd_err(e: LoadOrderError) -> CmdError {
     }
 }
 
-/// A short fingerprint of what a plan would rename, so a commit can check it is committing
-/// what was reviewed.
+/// A short fingerprint of what a plan would rename (and warn about), so a commit can check it
+/// is committing what was reviewed.
 fn plan_token(plan: &ChangePlan) -> String {
     let mut hasher = Sha256::new();
     hasher.update(format!("{:?}\n", plan.kind));
+    for (from, to) in &plan.identity_changes {
+        hasher.update(format!("identity {from} -> {to}\n"));
+    }
     for r in &plan.renames {
         hasher.update(r.from.as_bytes());
         hasher.update([0]);
@@ -69,6 +77,14 @@ impl Shell {
     /// whenever the install is read, before any plugin folder is scanned, whether or not the
     /// feature is switched on: a half-done rename must never be left behind.
     pub(super) fn recover_interrupted(&self, paths: &InstallPaths) {
+        // Almost always there is nothing to do; don't even look at the process list then.
+        if !paths
+            .records
+            .with_file_name(load_order::JOURNAL_FILE)
+            .exists()
+        {
+            return;
+        }
         // Any command can reach this; the core serialises it against a load-order commit in
         // progress (not against other writers of records.json: the window is narrow, and two
         // manager windows at once are not guarded at all).
@@ -168,12 +184,26 @@ impl Shell {
         })
     }
 
-    /// The current order changed as little as possible so required plugins load first.
-    pub fn load_order_suggest(&self) -> CmdResult<LoadOrderSuggestion> {
+    /// The order on screen (`wanted`, folders first-loaded first) changed as little as possible
+    /// so required plugins load first. An empty or out-of-date `wanted` means the saved order.
+    pub fn load_order_suggest(&self, wanted: Vec<String>) -> CmdResult<LoadOrderSuggestion> {
         self.require_load_order()?;
         let _op = lock(&self.op_lock);
         let (_, snap) = self.snapshot()?;
-        let layout = load_order::default_backend().layout(&snap.installed);
+        let mut layout = load_order::default_backend().layout(&snap.installed);
+        let mut position: HashMap<&str, usize> = HashMap::new();
+        for (i, folder) in wanted.iter().enumerate() {
+            position.insert(folder.as_str(), i);
+        }
+        let covers_every_plugin = position.len() == wanted.len()
+            && position.len() == layout.ordered.len()
+            && layout
+                .ordered
+                .iter()
+                .all(|p| position.contains_key(p.folder.as_str()));
+        if covers_every_plugin {
+            layout.ordered.sort_by_key(|p| position[p.folder.as_str()]);
+        }
         let suggestion = load_order::suggest_order(&layout);
         Ok(LoadOrderSuggestion {
             order: suggestion.order,
@@ -242,24 +272,29 @@ impl Shell {
         wanted: Vec<String>,
         token: &str,
     ) -> CmdResult<LoadOrderCommitView> {
-        self.require_load_order()?;
-        self.load_order_commit(token, |backend, snap| {
+        self.load_order_commit(token, true, |backend, snap| {
             backend.plan_apply(&paths_of(&snap.paths), &snap.installed, &wanted)
         })
     }
 
     pub fn load_order_commit_restore(&self, token: &str) -> CmdResult<LoadOrderCommitView> {
-        self.load_order_commit(token, |backend, snap| {
+        self.load_order_commit(token, false, |backend, snap| {
             backend.plan_restore(&paths_of(&snap.paths), &snap.installed)
         })
     }
 
+    /// `needs_switch_on`: applying an order needs the Settings switch on (checked here, inside
+    /// the lock); restoring never does.
     fn load_order_commit(
         &self,
         token: &str,
+        needs_switch_on: bool,
         make_plan: impl FnOnce(&dyn LoadOrderBackend, &Snapshot) -> Result<ChangePlan, LoadOrderError>,
     ) -> CmdResult<LoadOrderCommitView> {
         let _op = lock(&self.op_lock);
+        if needs_switch_on {
+            self.require_load_order()?;
+        }
         let game = (self.deps.detect_game)();
         if game == GameProcess::Running {
             return Err(CmdError::game_running());
@@ -482,7 +517,7 @@ mod tests {
 
         for result in [
             w.shell.load_order_plan_apply(strs(&["Alpha"])).map(|_| ()),
-            w.shell.load_order_suggest().map(|_| ()),
+            w.shell.load_order_suggest(strs(&["Alpha"])).map(|_| ()),
             w.shell.load_order_preview(strs(&["Alpha"])).map(|_| ()),
             w.shell
                 .load_order_commit_apply(strs(&["Alpha"]), "x")
@@ -568,6 +603,36 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, CmdError::Invalid { .. }), "{err:?}");
         assert_eq!(w.folders(), ["Alpha", "Beta"]);
+    }
+
+    #[test]
+    fn suggest_works_from_the_order_on_screen_not_only_the_saved_one() {
+        let w = World::new();
+        w.add("Alpha", Some("Alpha P"));
+        w.add("Beta", Some("Beta P"));
+        fs::write(
+            w.plugins().join("Alpha/plugin.txt"),
+            "name \"Alpha P\"\ndependencies\n\trequires\n\t\t\"Beta P\"\n",
+        )
+        .unwrap();
+        w.shell.load_order_set_enabled(true).unwrap();
+
+        // Saved order is Alpha, Beta: Alpha loads before the Beta it requires.
+        let saved = w.shell.load_order_suggest(Vec::new()).unwrap();
+        assert_eq!(saved.order, ["Beta", "Alpha"]);
+        assert_eq!(saved.fixed.len(), 1);
+        // The user has already put Beta first on screen: nothing left to fix, and their
+        // arrangement is kept rather than thrown away.
+        let shown = w
+            .shell
+            .load_order_suggest(strs(&["Beta", "Alpha"]))
+            .unwrap();
+        assert_eq!(shown.order, ["Beta", "Alpha"]);
+        assert!(shown.fixed.is_empty());
+        // A list that no longer matches the plugins is ignored.
+        let stale = w.shell.load_order_suggest(strs(&["Beta", "Gone"])).unwrap();
+        assert_eq!(stale.order, ["Beta", "Alpha"]);
+        assert_eq!(stale.fixed.len(), 1);
     }
 
     #[test]
@@ -714,7 +779,11 @@ mod tests {
                 call("load_order_preview", serde_json::json!({"wanted": wanted})).unwrap();
             assert_eq!(preview["renameCount"], 2);
             assert_eq!(preview["problem"], serde_json::Value::Null);
-            let suggestion = call("load_order_suggest", serde_json::json!({})).unwrap();
+            let suggestion = call(
+                "load_order_suggest",
+                serde_json::json!({"wanted": ["Alpha", "Beta"]}),
+            )
+            .unwrap();
             assert_eq!(suggestion["order"], serde_json::json!(["Alpha", "Beta"]));
 
             let plan = call(
