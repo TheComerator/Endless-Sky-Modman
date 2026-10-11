@@ -5,4 +5,9 @@ export type LoadOrderExcludedView = { folder: string, identity: string, reasons:
 /**
  * Still carries a number prefix from earlier; "Restore original names" fixes it.
  */
-stillRenamed: boolean, enabled: boolean, };
+stillRenamed: boolean, enabled: boolean, 
+/**
+ * Its only problem is that its `plugin.txt` has no name (and the manager has a record of
+ * it), so the page offers "Give it a name…" (`load_order_plan_name`).
+ */
+canName: boolean, };

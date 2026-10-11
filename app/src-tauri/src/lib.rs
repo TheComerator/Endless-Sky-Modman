@@ -67,6 +67,8 @@ fn with_commands<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
         commands::load_order_plan_restore,
         commands::load_order_commit_apply,
         commands::load_order_commit_restore,
+        commands::load_order_plan_name,
+        commands::load_order_commit_name,
     ])
 }
 

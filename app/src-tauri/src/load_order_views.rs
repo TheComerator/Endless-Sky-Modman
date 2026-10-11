@@ -7,6 +7,7 @@ use std::collections::HashSet;
 
 use esmm_core::load_order::{ChangeKind, ChangePlan, ExcludeReason, Violation, WinnerChange};
 use esmm_core::overlap::OverlapItem;
+use esmm_core::plugin_naming::{NamingPlan, Relation};
 use serde::Serialize;
 use ts_rs::TS;
 
@@ -56,6 +57,106 @@ pub struct LoadOrderExcludedView {
     /// Still carries a number prefix from earlier; "Restore original names" fixes it.
     pub still_renamed: bool,
     pub enabled: bool,
+    /// Its only problem is that its `plugin.txt` has no name (and the manager has a record of
+    /// it), so the page offers "Give it a name…" (`load_order_plan_name`).
+    pub can_name: bool,
+}
+
+/// How another plugin's `plugin.txt` mentions the plugin being named.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum LoadOrderNameRelation {
+    Requires,
+    Optional,
+    Conflicts,
+}
+
+impl From<Relation> for LoadOrderNameRelation {
+    fn from(r: Relation) -> Self {
+        match r {
+            Relation::Requires => LoadOrderNameRelation::Requires,
+            Relation::Optional => LoadOrderNameRelation::Optional,
+            Relation::Conflicts => LoadOrderNameRelation::Conflicts,
+        }
+    }
+}
+
+/// Another installed plugin that mentions the plugin's old name; after a rename it no longer
+/// matches, and the manager can't change that plugin's files.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct LoadOrderNameDependent {
+    /// That plugin's own name.
+    pub plugin: String,
+    pub relation: LoadOrderNameRelation,
+}
+
+/// Exactly what "Give it a name" would write and change, for its dialog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct LoadOrderNamePlanView {
+    pub folder: String,
+    /// The name that would be written, with surrounding spaces already trimmed.
+    pub name: String,
+    /// What the game calls the plugin now: its folder name.
+    pub old_identity: String,
+    /// The exact line added to `plugin.txt`, e.g. `name "Foo"`.
+    pub line: String,
+    /// There is no `plugin.txt` yet; one is created holding just `line`.
+    pub creates_file: bool,
+    /// Where a copy of `plugin.txt` as it was (or a note that there was none) is kept.
+    pub backup: String,
+    /// The name differs from the folder name, so the plugin's identity changes.
+    pub identity_changes: bool,
+    /// Whether it is switched on now; the setting moves to the new name unchanged.
+    pub enabled: bool,
+    /// Profiles that list it under its old name; they are updated to the new name.
+    pub profiles: Vec<String>,
+    /// Other plugins whose dependencies mention the old name.
+    pub dependents: Vec<LoadOrderNameDependent>,
+    /// Passed back to the commit; it is refused if the plan would be different by then.
+    pub token: String,
+}
+
+impl LoadOrderNamePlanView {
+    pub fn new(plan: &NamingPlan, token: String) -> Self {
+        LoadOrderNamePlanView {
+            folder: plan.folder.clone(),
+            name: plan.name.clone(),
+            old_identity: plan.old_identity.clone(),
+            line: plan.line.clone(),
+            creates_file: plan.creates_file(),
+            backup: plan.backup_path.display().to_string(),
+            identity_changes: plan.identity_changes(),
+            enabled: plan.enabled,
+            profiles: plan.profiles.clone(),
+            dependents: plan
+                .dependents
+                .iter()
+                .map(|d| LoadOrderNameDependent {
+                    plugin: d.plugin.clone(),
+                    relation: d.relation.into(),
+                })
+                .collect(),
+            token,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct LoadOrderNameCommitView {
+    /// The name now in the plugin's `plugin.txt`.
+    pub name: String,
+    /// Where the copy of the old `plugin.txt` (or the note) was saved.
+    pub backup: String,
+    pub identity_changed: bool,
+    /// The game's process list couldn't be read while `plugins.txt` was written.
+    pub game_detection_failed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
