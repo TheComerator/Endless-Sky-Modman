@@ -32,6 +32,7 @@ export function SettingsView({
   const [executable, setExecutable] = useState("");
   const [detecting, setDetecting] = useState(false);
   const [gameFolder, setGameFolder] = useState("");
+  const [adding, setAdding] = useState(false);
 
   const run = async (action: () => Promise<Awaited<ReturnType<typeof api.listInstalls>>>) => {
     try {
@@ -45,28 +46,36 @@ export function SettingsView({
 
   /** Adds the install in `folder`: the backend finds the executable, the kind and the config folder. */
   const addFolder = async (folder: string) => {
+    setAdding(true);
     try {
-      const installs = await api.addGameFolder(folder);
-      await onInstallsChanged(installs);
-      const added = installs.installs.find((i) => i.key === installs.selected);
+      const next = await api.addGameFolder(folder);
+      await onInstallsChanged(next);
+      const added = next.installs.find((i) => i.key === next.selected);
       setGameFolder("");
+      const name = added?.kind === "steam" ? "Endless Sky (Steam)" : added?.kind === "flatpak" ? "Endless Sky (Flatpak)" : "Endless Sky";
       notify(
         "success",
         added
-          ? `Found ${KIND_LABEL[added.kind]} Endless Sky${added.gameVersion ? ` v${added.gameVersion}` : ""}. Its plugins are in ${added.configDir}.`
+          ? `Now managing ${name}${added.gameVersion ? ` v${added.gameVersion}` : ""}. Its plugins are in ${added.configDir}.`
           : "Game folder added.",
       );
     } catch (e) {
       notify("error", asCmdError(e).message);
+    } finally {
+      setAdding(false);
     }
   };
 
   /** Browse… for the game folder; choosing one uses it straight away. */
   const pickGameFolder = async () => {
-    const chosen = await open({ directory: true, multiple: false, title: "Choose the folder Endless Sky is installed in" });
-    if (typeof chosen === "string") {
-      setGameFolder(chosen);
-      await addFolder(chosen);
+    try {
+      const chosen = await open({ directory: true, multiple: false, title: "Choose the folder Endless Sky is installed in" });
+      if (typeof chosen === "string") {
+        setGameFolder(chosen);
+        await addFolder(chosen);
+      }
+    } catch (e) {
+      notify("error", asCmdError(e).message);
     }
   };
 
@@ -132,7 +141,7 @@ export function SettingsView({
                   </div>
                   <div className="muted mono">{i.configDir}</div>
                   <div className="muted">
-                    {i.launch ? `Launches via ${i.launch}` : "No known way to launch; add its executable below."}
+                    {i.launch ? `Launches via ${i.launch}` : "No known way to launch; pick the game folder below."}
                   </div>
                 </div>
                 {i.userAdded && (
@@ -172,14 +181,14 @@ export function SettingsView({
                 onChange={(e) => setGameFolder(e.target.value)}
                 placeholder="The folder Endless Sky is installed in"
               />
-              <button type="button" onClick={() => void pickGameFolder()}>
+              <button type="button" disabled={adding} onClick={() => void pickGameFolder()}>
                 Browse…
               </button>
             </span>
           </label>
           <div>
-            <button type="submit" className="primary" disabled={!gameFolder.trim()}>
-              Use this folder
+            <button type="submit" className="primary" disabled={!gameFolder.trim() || adding}>
+              {adding ? "Looking…" : "Use this folder"}
             </button>
           </div>
         </form>

@@ -205,6 +205,23 @@ mod tests {
     }
 
     #[test]
+    fn custom_installs_saved_before_game_folders_existed_still_load() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(SETTINGS_FILE),
+            r#"{"selected": null, "custom": [{"configDir": "/x", "executable": null}, {"configDir": null, "executable": "/opt/es"}]}"#,
+        )
+        .unwrap();
+        let loaded = Settings::load(dir.path());
+        assert_eq!(loaded.custom.len(), 2);
+        assert!(loaded.custom.iter().all(|c| c.game_folder.is_none()));
+        // And entries without a game folder are written without the field, as before.
+        loaded.save(dir.path()).unwrap();
+        let text = std::fs::read_to_string(dir.path().join(SETTINGS_FILE)).unwrap();
+        assert!(!text.contains("gameFolder"), "{text}");
+    }
+
+    #[test]
     fn keys_distinguish_installs_sharing_a_config_dir() {
         let dir = PathBuf::from("/cfg");
         let custom = GameInstall::custom(dir.clone(), None);

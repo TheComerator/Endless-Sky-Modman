@@ -70,7 +70,7 @@ function TopBar({ manager, planFlow, notify }: { manager: Manager; planFlow: Pla
         <button
           className="primary launch"
           disabled={!install?.launch || running}
-          title={install && !install.launch ? "Add the game's executable in Settings to launch it from here" : undefined}
+          title={install && !install.launch ? "Pick the game folder in Settings to launch it from here" : undefined}
           onClick={async () => {
             try {
               await api.launchGame();
