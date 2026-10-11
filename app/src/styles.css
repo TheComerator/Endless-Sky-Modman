@@ -894,3 +894,15 @@ ul.plain li + li {
   font-weight: 500;
   color: var(--muted, #8b93a7);
 }
+
+/* --- Load order (optional feature; delete this block with it) ----------- */
+
+.order-pos {
+  width: 28px;
+  text-align: right;
+  flex: none;
+}
+
+.order-warn {
+  color: var(--warn);
+}

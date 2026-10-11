@@ -7,6 +7,12 @@ import type { CmdError } from "./bindings/CmdError";
 import type { CommitView } from "./bindings/CommitView";
 import type { GameProcessView } from "./bindings/GameProcessView";
 import type { InstallsView } from "./bindings/InstallsView";
+import type { LoadOrderCommitView } from "./bindings/LoadOrderCommitView"; // load order
+import type { LoadOrderPlanView } from "./bindings/LoadOrderPlanView"; // load order
+import type { LoadOrderPreview } from "./bindings/LoadOrderPreview"; // load order
+import type { LoadOrderState } from "./bindings/LoadOrderState"; // load order
+import type { LoadOrderSuggestion } from "./bindings/LoadOrderSuggestion"; // load order
+import type { LoadOrderSwitch } from "./bindings/LoadOrderSwitch"; // load order
 import type { ManagerState } from "./bindings/ManagerState";
 import type { PlanView } from "./bindings/PlanView";
 
@@ -48,6 +54,17 @@ export const api = {
   importProfile: (path: string) => invoke<string>("import_profile", { path }),
   updateActiveProfile: () => invoke<void>("update_active_profile"),
   deleteProfile: (name: string) => invoke<void>("delete_profile", { name }),
+
+  // load order (optional feature; delete with it)
+  loadOrderState: () => invoke<LoadOrderState>("load_order_state"),
+  loadOrderSetEnabled: (enabled: boolean) => invoke<LoadOrderSwitch>("load_order_set_enabled", { enabled }),
+  loadOrderSuggest: () => invoke<LoadOrderSuggestion>("load_order_suggest"),
+  loadOrderPreview: (wanted: string[]) => invoke<LoadOrderPreview>("load_order_preview", { wanted }),
+  loadOrderPlanApply: (wanted: string[]) => invoke<LoadOrderPlanView>("load_order_plan_apply", { wanted }),
+  loadOrderPlanRestore: () => invoke<LoadOrderPlanView>("load_order_plan_restore"),
+  loadOrderCommitApply: (wanted: string[], token: string) =>
+    invoke<LoadOrderCommitView>("load_order_commit_apply", { wanted, token }),
+  loadOrderCommitRestore: (token: string) => invoke<LoadOrderCommitView>("load_order_commit_restore", { token }),
 };
 
 /** Every command rejects with a `CmdError`; Tauri's own argument errors arrive as strings. */

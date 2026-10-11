@@ -3,9 +3,11 @@ import { useState } from "react";
 
 import { api, asCmdError } from "../api";
 import type { InstallKindView } from "../bindings/InstallKindView";
+import type { LoadOrder } from "../hooks/useLoadOrder"; // load order
 import type { Manager } from "../hooks/useManager";
 import type { Notify } from "../hooks/useToasts";
 import type { Updater } from "../hooks/useUpdater";
+import { LoadOrderSettings } from "./LoadOrderView"; // load order
 
 export const KIND_LABEL: Record<InstallKindView, string> = {
   standalone: "Standalone",
@@ -14,7 +16,17 @@ export const KIND_LABEL: Record<InstallKindView, string> = {
   custom: "Custom",
 };
 
-export function SettingsView({ manager, notify, updater }: { manager: Manager; notify: Notify; updater: Updater }) {
+export function SettingsView({
+  manager,
+  notify,
+  updater,
+  loadOrder,
+}: {
+  manager: Manager;
+  notify: Notify;
+  updater: Updater;
+  loadOrder: LoadOrder;
+}) {
   const { installs, refreshInstalls, onInstallsChanged } = manager;
   const [configDir, setConfigDir] = useState("");
   const [executable, setExecutable] = useState("");
@@ -50,6 +62,7 @@ export function SettingsView({ manager, notify, updater }: { manager: Manager; n
           nothing is ever installed without your click.
         </label>
       </section>
+      <LoadOrderSettings loadOrder={loadOrder} manager={manager} notify={notify} />
       <section>
         <div className="section-head">
           <h2>Game installs</h2>
