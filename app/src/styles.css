@@ -906,3 +906,13 @@ ul.plain li + li {
 .order-warn {
   color: var(--warn);
 }
+
+/* --- Settings: the "Advanced" fold under Game Folder ------------------------ */
+
+.advanced {
+  margin-top: 16px;
+}
+
+.advanced summary {
+  cursor: pointer;
+}

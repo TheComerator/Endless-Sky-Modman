@@ -24,6 +24,7 @@ export const api = {
   selectInstall: (key: string) => invoke<InstallsView>("select_install", { key }),
   addCustomInstall: (configDir: string | null, executable: string | null) =>
     invoke<InstallsView>("add_custom_install", { configDir, executable }),
+  addGameFolder: (path: string) => invoke<InstallsView>("add_game_folder", { path }),
   removeCustomInstall: (key: string) => invoke<InstallsView>("remove_custom_install", { key }),
   gameStatus: () => invoke<GameProcessView>("game_status"),
   launchGame: () => invoke<void>("launch_game"),

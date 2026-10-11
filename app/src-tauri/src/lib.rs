@@ -35,6 +35,7 @@ fn with_commands<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
         commands::list_installs,
         commands::select_install,
         commands::add_custom_install,
+        commands::add_game_folder,
         commands::remove_custom_install,
         commands::game_status,
         commands::launch_game,

@@ -531,6 +531,7 @@ impl Shell {
         let custom = CustomInstall {
             config_dir: config_dir.map(PathBuf::from),
             executable: executable.map(PathBuf::from),
+            game_folder: None,
         };
         let install = custom.to_install(self.deps.env.as_ref()).ok_or_else(|| {
             CmdError::invalid("Can't find the default config folder; give one explicitly.")
@@ -539,6 +540,47 @@ impl Shell {
 
         let _op = lock(&self.op_lock);
         let mut settings = Settings::load(&self.deps.data_dir);
+        if !settings.custom.contains(&custom) {
+            settings.custom.push(custom);
+        }
+        settings.selected = Some(key);
+        settings.save(&self.deps.data_dir)?;
+        self.reset_plans();
+        drop(_op);
+        Ok(self.list_installs(false))
+    }
+
+    /// Adds and selects the install in the folder the user says the game is installed in. The
+    /// executable, the kind of install (Steam or not) and the config folder are all found from
+    /// the folder (`game_install::install_from_game_folder`), so the user only picks one folder.
+    pub fn add_game_folder(&self, path: &str) -> CmdResult<InstallsView> {
+        let path = path.trim();
+        if path.is_empty() {
+            return Err(CmdError::invalid(
+                "Pick the folder Endless Sky is installed in.",
+            ));
+        }
+        if !Path::new(path).is_absolute() {
+            return Err(CmdError::invalid(
+                "The game folder must be an absolute path.",
+            ));
+        }
+        let env = self.deps.env.as_ref().ok_or_else(|| {
+            CmdError::invalid("Can't find your home folder, so the game folder can't be checked.")
+        })?;
+        let folder = PathBuf::from(path);
+        let install = game_install::install_from_game_folder(env, &folder)
+            .map_err(|e| CmdError::invalid(e.to_string()))?;
+        let key = install_key(&install);
+        tracing::info!(folder = %folder.display(), kind = ?install.kind, "game folder added");
+
+        let _op = lock(&self.op_lock);
+        let mut settings = Settings::load(&self.deps.data_dir);
+        let custom = CustomInstall {
+            config_dir: None,
+            executable: None,
+            game_folder: Some(folder),
+        };
         if !settings.custom.contains(&custom) {
             settings.custom.push(custom);
         }

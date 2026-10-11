@@ -16,7 +16,7 @@ use std::time::SystemTime;
 
 use esmm_core::catalog::{CatalogEntry, CatalogFetch, FetchSource};
 use esmm_core::download::Downloaded;
-use esmm_core::game_install::GameInstall;
+use esmm_core::game_install::{DetectEnv, GameInstall, Os};
 use esmm_core::game_state::GameProcess;
 use esmm_core::install;
 use esmm_core::manager::{CommitError, CommitReport, Fetcher};
@@ -163,6 +163,11 @@ impl World {
 
     /// No install and no catalog loaded yet.
     fn bare() -> Self {
+        Self::bare_with_env(None)
+    }
+
+    /// Like `bare`, with a (fake) machine to detect installs on and resolve game folders against.
+    fn bare_with_env(env: Option<DetectEnv>) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("endless-sky");
         fs::create_dir_all(install::plugins_dir(&config)).unwrap();
@@ -175,7 +180,7 @@ impl World {
         let deps = Deps {
             data_dir: dir.path().join("app-data"),
             cache_dir: dir.path().join("app-cache"),
-            env: None,
+            env,
             fetcher: fetcher.clone(),
             fetch_catalog: Box::new(move |_| {
                 Ok(CatalogFetch {
@@ -1190,6 +1195,127 @@ fn custom_install_input_is_validated() {
     let exe = w.dir.path().join("endless-sky.AppImage");
     fs::write(&exe, "").unwrap();
     assert_eq!(invalid(None, Some(exe.to_str().unwrap())), "invalid");
+}
+
+/// A fake Linux machine under `base`: nothing is installed, so nothing is detected.
+fn fake_linux(base: &Path) -> DetectEnv {
+    DetectEnv {
+        os: Os::Linux,
+        home: base.join("home"),
+        vars: HashMap::new(),
+        root: base.join("root"),
+        steam_roots: Vec::new(),
+    }
+}
+
+#[test]
+fn a_game_folder_is_all_it_takes_to_add_and_select_an_install() {
+    let machine = tempfile::tempdir().unwrap();
+    let w = World::bare_with_env(Some(fake_linux(machine.path())));
+    // Nothing is detected on the fake machine.
+    assert!(w.shell.list_installs(false).installs.is_empty());
+
+    let game = machine.path().join("Games/Endless Sky");
+    fs::create_dir_all(&game).unwrap();
+    fs::write(game.join("endless-sky"), "").unwrap();
+    let installs = w.shell.add_game_folder(game.to_str().unwrap()).unwrap();
+
+    assert_eq!(installs.installs.len(), 1);
+    let found = &installs.installs[0];
+    assert_eq!(installs.selected.as_deref(), Some(found.key.as_str()));
+    assert!(found.user_added);
+    assert_eq!(
+        found.executable.as_deref(),
+        game.join("endless-sky").to_str()
+    );
+    // The config folder was found, not asked for.
+    assert_eq!(
+        found.config_dir,
+        machine
+            .path()
+            .join("home/.local/share/endless-sky")
+            .display()
+            .to_string()
+    );
+    assert!(found.launch.is_some());
+    assert_eq!(found.game_version.as_deref(), Some("0.10.16"));
+
+    // It is remembered (the folder, not a snapshot of what was found in it)...
+    let settings = crate::settings::Settings::load(&w.dir.path().join("app-data"));
+    assert_eq!(settings.custom.len(), 1);
+    assert_eq!(
+        settings.custom[0].game_folder.as_deref(),
+        Some(game.as_path())
+    );
+    assert_eq!(settings.selected.as_deref(), Some(found.key.as_str()));
+
+    // ...adding the same folder again changes nothing...
+    w.shell.add_game_folder(game.to_str().unwrap()).unwrap();
+    assert_eq!(
+        crate::settings::Settings::load(&w.dir.path().join("app-data"))
+            .custom
+            .len(),
+        1
+    );
+    // ...and the plugins of that install are the ones managed.
+    assert_eq!(w.state().install.unwrap().key, found.key);
+
+    // If the game is later uninstalled, the entry simply stops being offered.
+    fs::remove_file(game.join("endless-sky")).unwrap();
+    assert!(w.shell.list_installs(false).installs.is_empty());
+}
+
+#[test]
+fn a_game_folder_that_does_not_hold_the_game_is_explained_not_added() {
+    let machine = tempfile::tempdir().unwrap();
+    let w = World::bare_with_env(Some(fake_linux(machine.path())));
+    let empty = machine.path().join("Games/empty");
+    fs::create_dir_all(&empty).unwrap();
+
+    let err = w
+        .shell
+        .add_game_folder(empty.to_str().unwrap())
+        .unwrap_err();
+    assert_eq!(kind(&err), "invalid");
+    assert!(err.message().contains("endless-sky"), "{}", err.message());
+    for bad in ["", "  ", "relative/folder", "/definitely/not/a/folder"] {
+        assert_eq!(
+            kind(&w.shell.add_game_folder(bad).unwrap_err()),
+            "invalid",
+            "{bad:?}"
+        );
+    }
+    assert!(w.shell.list_installs(false).installs.is_empty());
+    assert!(
+        crate::settings::Settings::load(&w.dir.path().join("app-data"))
+            .custom
+            .is_empty()
+    );
+
+    // Without a home folder the machine can't be checked at all.
+    let blind = World::bare();
+    assert_eq!(
+        kind(&blind.shell.add_game_folder("/abs").unwrap_err()),
+        "invalid"
+    );
+}
+
+#[test]
+fn a_steam_game_folder_becomes_a_steam_install_that_launches_through_steam() {
+    let machine = tempfile::tempdir().unwrap();
+    let w = World::bare_with_env(Some(fake_linux(machine.path())));
+    let game = machine
+        .path()
+        .join("SteamLibrary/steamapps/common/Endless Sky");
+    fs::create_dir_all(&game).unwrap();
+    fs::write(game.join("endless-sky"), "").unwrap();
+    // Picking the library itself works too.
+    let installs = w
+        .shell
+        .add_game_folder(machine.path().join("SteamLibrary").to_str().unwrap())
+        .unwrap();
+    assert_eq!(installs.installs[0].kind, InstallKindView::Steam);
+    assert_eq!(installs.installs[0].launch.as_deref(), Some("Steam"));
 }
 
 #[test]
