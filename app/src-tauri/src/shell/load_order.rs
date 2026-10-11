@@ -18,7 +18,7 @@ use esmm_core::load_order::{
 };
 use esmm_core::manager::InstalledPlugin;
 use esmm_core::overlap::{self, PluginIndex};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use sha2::{Digest, Sha256};
 
@@ -252,7 +252,12 @@ impl Shell {
             .map_err(cmd_err)?;
         tracing::info!(renames = plan.renames.len(), "load order apply planned");
         let changes = overlap_changes(&snap, &plan);
-        Ok(LoadOrderPlanView::new(&plan, plan_token(&plan), &changes))
+        Ok(LoadOrderPlanView::new(
+            &plan,
+            plan_token(&plan),
+            &changes,
+            &placed_by_hand(&snap),
+        ))
     }
 
     /// Allowed whether or not the switch is on.
@@ -264,7 +269,12 @@ impl Shell {
             .map_err(cmd_err)?;
         tracing::info!(renames = plan.renames.len(), "load order restore planned");
         let changes = overlap_changes(&snap, &plan);
-        Ok(LoadOrderPlanView::new(&plan, plan_token(&plan), &changes))
+        Ok(LoadOrderPlanView::new(
+            &plan,
+            plan_token(&plan),
+            &changes,
+            &placed_by_hand(&snap),
+        ))
     }
 
     pub fn load_order_commit_apply(
@@ -331,6 +341,16 @@ impl Shell {
             backup: outcome.backup.map(|p| p.display().to_string()),
         })
     }
+}
+
+/// Folders the user put in `plugins/` themselves (the manager only adopted them: its record has
+/// no download hash), so a review can say that it is their folder being renamed.
+fn placed_by_hand(snap: &Snapshot) -> HashSet<String> {
+    snap.installed
+        .iter()
+        .filter(|p| p.record.as_ref().is_some_and(|r| r.sha256.is_empty()))
+        .map(|p| p.folder.clone())
+        .collect()
 }
 
 /// The overlaps (among enabled plugins) whose winner `plan` would change. Each plugin is read
@@ -490,6 +510,15 @@ mod tests {
             records::save(&path, &records).unwrap();
         }
 
+        /// A plugin put in by hand that the manager only adopted: its record has no download hash.
+        fn add_by_hand(&self, folder: &str, name: Option<&str>) {
+            self.add(folder, name);
+            let path = self.paths().records;
+            let mut records: InstallRecords = records::load(&path).unwrap();
+            records.get_mut(folder).unwrap().sha256 = String::new();
+            records::save(&path, &records).unwrap();
+        }
+
         fn folders(&self) -> Vec<String> {
             let mut names: Vec<String> = fs::read_dir(self.plugins())
                 .unwrap()
@@ -585,6 +614,50 @@ mod tests {
         w.shell.load_order_commit_restore(&restore.token).unwrap();
         assert_eq!(w.folders(), ["Alpha", "Anon", "Beta"]);
         assert_eq!(w.shell.load_order_state().unwrap().renamed_count, 0);
+    }
+
+    #[test]
+    fn a_review_marks_the_folders_the_user_put_in_by_hand() {
+        let w = World::new();
+        w.add("Alpha", Some("Alpha P"));
+        w.add_by_hand("Beta-1.2", Some("Beta P"));
+        w.add_by_hand("Anon", None); // adopted but nameless: left out, with the reason
+        w.shell.load_order_set_enabled(true).unwrap();
+
+        let state = w.shell.load_order_state().unwrap();
+        assert_eq!(state.plugins.len(), 2);
+        assert_eq!(state.excluded.len(), 1);
+        assert_eq!(state.excluded[0].folder, "Anon");
+        assert_eq!(
+            state.excluded[0].reasons,
+            [LoadOrderExcludeReason::NoPluginName]
+        );
+
+        let plan = w
+            .shell
+            .load_order_plan_apply(strs(&["Alpha", "Beta-1.2"]))
+            .unwrap();
+        let by_hand: Vec<(&str, bool)> = plan
+            .renames
+            .iter()
+            .map(|r| (r.from.as_str(), r.by_hand))
+            .collect();
+        assert_eq!(by_hand, [("Alpha", false), ("Beta-1.2", true)]);
+        w.shell
+            .load_order_commit_apply(strs(&["Alpha", "Beta-1.2"]), &plan.token)
+            .unwrap();
+        assert_eq!(w.folders(), ["010-Alpha", "020-Beta-1.2", "Anon"]);
+
+        // The restore review marks it too (the page only shows the warning for an apply).
+        let restore = w.shell.load_order_plan_restore().unwrap();
+        let by_hand: Vec<(&str, bool)> = restore
+            .renames
+            .iter()
+            .map(|r| (r.from.as_str(), r.by_hand))
+            .collect();
+        assert_eq!(by_hand, [("010-Alpha", false), ("020-Beta-1.2", true)]);
+        w.shell.load_order_commit_restore(&restore.token).unwrap();
+        assert_eq!(w.folders(), ["Alpha", "Anon", "Beta-1.2"]);
     }
 
     #[test]
@@ -794,7 +867,7 @@ mod tests {
             assert_eq!(plan["kind"], "apply");
             assert_eq!(
                 plan["renames"][0],
-                serde_json::json!({"from": "Beta", "to": "010-Beta", "identity": "Beta P"})
+                serde_json::json!({"from": "Beta", "to": "010-Beta", "identity": "Beta P", "byHand": false})
             );
             let token = plan["token"].as_str().unwrap().to_string();
 

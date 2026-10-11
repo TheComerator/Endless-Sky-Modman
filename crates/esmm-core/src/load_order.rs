@@ -15,9 +15,11 @@
 //!   Renaming a folder only keeps the identity if `plugin.txt` names the plugin, so a plugin
 //!   without a name is never renamed ([`ExcludeReason::NoPluginName`]). Nothing is ever written
 //!   inside a plugin folder.
-//! * **Only plugins the manager installed** (a record with a download hash) are renamed. Plugins
-//!   put in `plugins/` by hand, adopted or not, are never touched
-//!   ([`ExcludeReason::NotInstalledByManager`]).
+//! * **Only plugins the manager has a record for** are renamed: ones it installed, and ones put in
+//!   `plugins/` by hand that it linked to the catalog (adopted), since a record is where the
+//!   original folder name is remembered so a restore is possible. A plugin it knows nothing about
+//!   is never touched ([`ExcludeReason::NotLinkedToCatalog`]), and neither is one whose folder
+//!   name isn't a plain, short-enough name ([`ExcludeReason::UnsupportedFolderName`]).
 //! * **Records.** An install record's `folder` is always the name on disk right now (and the key);
 //!   `original_folder` remembers the name before the first rename. Profiles and `plugins.txt` use
 //!   identities, so they keep working untouched.
@@ -214,9 +216,13 @@ pub enum ExcludeReason {
     /// Its `plugin.txt` has no `name` (or there is no `plugin.txt`), so the game uses the folder
     /// name as its identity: renaming the folder would make the game see a different plugin.
     NoPluginName,
-    /// The manager didn't download it: it was put in `plugins/` by hand (even if the manager
-    /// later linked it to the catalog), and the manager only renames what it installed itself.
-    NotInstalledByManager,
+    /// The manager has no record of it: it was put in `plugins/` by hand and isn't linked to a
+    /// catalog plugin, so there is nowhere to remember its original folder name and a restore
+    /// would be impossible.
+    NotLinkedToCatalog,
+    /// Its folder name has characters the manager doesn't rename (a path separator, a trailing
+    /// dot or space, a name Windows reserves) or is too long to take a three-digit prefix.
+    UnsupportedFolderName,
 }
 
 /// A plugin that can be ordered.
@@ -384,12 +390,16 @@ fn is_blank(name: &Option<String>) -> bool {
 
 fn exclusion_reasons(plugin: &InstalledPlugin) -> Vec<ExcludeReason> {
     let mut reasons = Vec::new();
-    match &plugin.record {
-        Some(record) if !record.sha256.is_empty() => {}
-        _ => reasons.push(ExcludeReason::NotInstalledByManager),
+    if plugin.record.is_none() {
+        reasons.push(ExcludeReason::NotLinkedToCatalog);
     }
     if is_blank(&plugin.meta.name) {
         reasons.push(ExcludeReason::NoPluginName);
+    }
+    // A hand-named folder can be anything; the renamed form must be a plain name that fits.
+    let original = original_of(plugin);
+    if !is_safe_name(&original) || original.len() + 4 > MAX_FOLDER_NAME_BYTES {
+        reasons.push(ExcludeReason::UnsupportedFolderName);
     }
     reasons
 }
@@ -1546,18 +1556,18 @@ mod tests {
     // --- eligibility ---------------------------------------------------------
 
     #[test]
-    fn only_named_plugins_the_manager_installed_can_be_ordered() {
+    fn named_plugins_the_manager_has_a_record_for_can_be_ordered() {
         let w = World::new();
         w.add("Zed", Some("Zed Plugin"), &[]);
         w.add("Anon", None, &[]); // no plugin.txt name: identity is the folder
         w.add("ByHand", Some("By Hand"), &[]);
-        w.set_record("ByHand", "By Hand", "", None); // adopted: no download hash
+        w.set_record("ByHand", "By Hand", "", None); // adopted: put in by hand, linked to the catalog
         // Not in the records at all.
         fs::create_dir_all(w.plugins().join("Loose/data")).unwrap();
         fs::write(w.plugins().join("Loose/plugin.txt"), "name \"Loose\"\n").unwrap();
 
         let layout = backend().layout(&w.installed());
-        assert_eq!(folders_of(&layout), ["Zed"]);
+        assert_eq!(folders_of(&layout), ["ByHand", "Zed"]);
         let reasons = |folder: &str| {
             layout
                 .excluded
@@ -1568,8 +1578,104 @@ mod tests {
                 .clone()
         };
         assert_eq!(reasons("Anon"), [ExcludeReason::NoPluginName]);
-        assert_eq!(reasons("ByHand"), [ExcludeReason::NotInstalledByManager]);
-        assert_eq!(reasons("Loose"), [ExcludeReason::NotInstalledByManager]);
+        assert_eq!(reasons("Loose"), [ExcludeReason::NotLinkedToCatalog]);
+    }
+
+    #[test]
+    fn a_plugin_without_a_name_stays_out_even_when_it_was_put_in_by_hand() {
+        let w = World::new();
+        w.add("AnonLinked", None, &[]);
+        w.set_record("AnonLinked", "AnonLinked", "", None); // adopted, but nameless
+        fs::create_dir_all(w.plugins().join("AnonLoose/data")).unwrap(); // no record, no plugin.txt
+        let layout = backend().layout(&w.installed());
+        assert!(layout.ordered.is_empty());
+        let reasons = |folder: &str| {
+            layout
+                .excluded
+                .iter()
+                .find(|e| e.folder == folder)
+                .unwrap()
+                .reasons
+                .clone()
+        };
+        assert_eq!(reasons("AnonLinked"), [ExcludeReason::NoPluginName]);
+        assert_eq!(
+            reasons("AnonLoose"),
+            [
+                ExcludeReason::NotLinkedToCatalog,
+                ExcludeReason::NoPluginName
+            ]
+        );
+        // And a plan over them renames nothing.
+        let plan = backend()
+            .plan_apply(&w.paths(), &w.installed(), &[])
+            .unwrap();
+        assert!(plan.renames.is_empty());
+    }
+
+    #[test]
+    fn a_plugin_put_in_by_hand_and_linked_to_the_catalog_is_renamed_and_restored_like_any_other() {
+        let w = World::new();
+        w.add("Foo-1.2", Some("Foo"), &[]);
+        w.set_record("Foo-1.2", "Foo", "", None); // adopted: no download hash
+        w.add("Bar", Some("Bar"), &[]);
+        let plan = backend()
+            .plan_apply(&w.paths(), &w.installed(), &strs(&["Bar", "Foo-1.2"]))
+            .unwrap();
+        backend()
+            .commit(&w.paths(), &plan, GameProcess::NotRunning)
+            .unwrap();
+        assert_eq!(w.folders(), ["010-Bar", "020-Foo-1.2"]);
+        let records = w.records();
+        assert_eq!(
+            records["020-Foo-1.2"].original_folder.as_deref(),
+            Some("Foo-1.2")
+        );
+        assert_eq!(records["020-Foo-1.2"].sha256, "", "still an adopted record");
+        assert_eq!(records["020-Foo-1.2"].identity, "Foo");
+
+        let restore = backend().plan_restore(&w.paths(), &w.installed()).unwrap();
+        backend()
+            .commit(&w.paths(), &restore, GameProcess::NotRunning)
+            .unwrap();
+        assert_eq!(w.folders(), ["Bar", "Foo-1.2"]);
+        let records = w.records();
+        assert!(
+            !records.contains_key("020-Foo-1.2"),
+            "the numbered key is gone"
+        );
+        let restored = &records["Foo-1.2"];
+        assert_eq!(restored.original_folder, None, "nothing left to restore");
+        assert_eq!(restored.folder, "Foo-1.2");
+        assert_eq!(restored.sha256, "", "still an adopted record");
+    }
+
+    // Unix only: Windows can't have a folder with a colon in its name.
+    #[cfg(unix)]
+    #[test]
+    fn hand_named_folders_the_manager_would_not_rename_are_left_out_with_a_reason() {
+        let w = World::new();
+        w.add("Fine", Some("Fine"), &[]);
+        w.add("Odd:name", Some("Odd Name"), &[]); // a colon: fine on Linux, never on Windows
+        let long = "y".repeat(252); // too long to take a "010-" in front
+        w.add(&long, Some("Long"), &[]);
+        let layout = backend().layout(&w.installed());
+        assert_eq!(folders_of(&layout), ["Fine"]);
+        for excluded in &layout.excluded {
+            assert_eq!(
+                excluded.reasons,
+                [ExcludeReason::UnsupportedFolderName],
+                "{}",
+                excluded.folder
+            );
+        }
+        assert_eq!(layout.excluded.len(), 2);
+        // So a plan over the rest still works instead of failing as a whole.
+        assert!(
+            backend()
+                .plan_apply(&w.paths(), &w.installed(), &strs(&["Fine"]))
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1665,13 +1771,26 @@ mod tests {
     }
 
     #[test]
-    fn a_folder_name_that_gets_too_long_is_refused() {
+    fn a_folder_name_that_would_get_too_long_is_left_out_and_a_forced_one_is_still_refused() {
         let w = World::new();
         let long = "x".repeat(253);
         w.add(&long, Some("Long"), &[]);
-        let err = backend()
-            .plan_apply(&w.paths(), &w.installed(), &[long])
-            .unwrap_err();
+        // Up front: it is simply not part of the order, with a reason.
+        let layout = backend().layout(&w.installed());
+        assert!(layout.ordered.is_empty());
+        assert_eq!(
+            layout.excluded[0].reasons,
+            [ExcludeReason::UnsupportedFolderName]
+        );
+        // Defence in depth: a plan that somehow contained it is refused, not attempted.
+        let rename = Rename {
+            from: long.clone(),
+            to: format!("010-{long}"),
+            identity: "Long".into(),
+            from_original: None,
+            to_original: Some(long),
+        };
+        let err = check_targets(&w.paths(), &[rename], false).unwrap_err();
         assert!(
             matches!(err, LoadOrderError::NameTooLong { length: 257, .. }),
             "{err:?}"
@@ -2228,7 +2347,11 @@ mod tests {
         w.add("B", Some("B"), &["C"]);
         w.add("C", Some("C"), &["B"]); // a cycle
         w.add("Hand", Some("Hand Made"), &[]);
-        w.set_record("Hand", "Hand Made", "", None); // excluded: installed by hand
+        // Not in the records at all, so it can't be ordered and its requirement is ignored.
+        fs::remove_file(w.records_path.clone()).unwrap();
+        for folder in ["A", "B", "C"] {
+            w.set_record(folder, folder, "hash", None);
+        }
         let layout = layout_of(&w);
         let suggestion = suggest_order(&layout);
         let mut sorted = suggestion.order.clone();
