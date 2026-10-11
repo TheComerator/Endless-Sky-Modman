@@ -404,42 +404,189 @@ fn detect_steam(env: &DetectEnv) -> Vec<GameInstall> {
             .unwrap_or(STEAM_INSTALL_DIR)
             .to_string();
         let game_dir = steamapps.join("common").join(install_dir);
-        let proton_config = steamapps
-            .join("compatdata")
-            .join(STEAM_APP_ID)
-            .join("pfx")
-            .join("drive_c")
-            .join("users")
-            .join("steamuser")
-            .join("AppData")
-            .join("Roaming")
-            .join(PREF_DIR);
-        let windows_exe = game_dir.join("Endless Sky.exe");
-        let (config_dir, exe) = match env.os {
-            Os::Linux => {
-                let native_exe = game_dir.join("endless-sky");
-                let proton =
-                    !native_exe.is_file() && (windows_exe.is_file() || proton_config.is_dir());
-                if proton {
-                    (proton_config, windows_exe)
-                } else {
-                    (default_config_dir(env), native_exe)
-                }
-            }
-            Os::Windows => (default_config_dir(env), windows_exe),
-            Os::MacOs => (
-                default_config_dir(env),
-                game_dir.join(mac_bundle_executable()),
-            ),
-        };
-        installs.push(GameInstall {
-            kind: InstallKind::Steam,
-            config_dir,
-            executable: exe.is_file().then_some(exe),
-            launch: Launch::Steam,
-        });
+        installs.push(steam_install(env, &steamapps, &game_dir));
     }
     installs
+}
+
+/// The Steam install whose game files are in `game_dir` (inside the library's `steamapps`).
+/// Under Proton on Linux (the Windows build, run in a Wine prefix) the config dir is inside the
+/// prefix; everywhere else it is the usual one for the OS.
+fn steam_install(env: &DetectEnv, steamapps: &Path, game_dir: &Path) -> GameInstall {
+    let proton_config = steamapps
+        .join("compatdata")
+        .join(STEAM_APP_ID)
+        .join("pfx")
+        .join("drive_c")
+        .join("users")
+        .join("steamuser")
+        .join("AppData")
+        .join("Roaming")
+        .join(PREF_DIR);
+    let windows_exe = game_dir.join("Endless Sky.exe");
+    let (config_dir, exe) = match env.os {
+        Os::Linux => {
+            let native_exe = game_dir.join("endless-sky");
+            let proton = !native_exe.is_file() && (windows_exe.is_file() || proton_config.is_dir());
+            if proton {
+                (proton_config, windows_exe)
+            } else {
+                (default_config_dir(env), native_exe)
+            }
+        }
+        Os::Windows => (default_config_dir(env), windows_exe),
+        Os::MacOs => (
+            default_config_dir(env),
+            game_dir.join(mac_bundle_executable()),
+        ),
+    };
+    GameInstall {
+        kind: InstallKind::Steam,
+        config_dir,
+        executable: exe.is_file().then_some(exe),
+        launch: Launch::Steam,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pointing at the game folder by hand
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, thiserror::Error)]
+pub enum GameFolderError {
+    #[error("{0:?} isn't a folder.")]
+    NotAFolder(PathBuf),
+    #[error(
+        "Endless Sky wasn't found in {folder:?}. Pick the folder the game is installed in (the one containing {expected})."
+    )]
+    NotFound { folder: PathBuf, expected: String },
+}
+
+/// What the user should expect the game folder to contain on this OS, for the error message.
+fn expected_game_files(os: Os) -> &'static str {
+    match os {
+        Os::Linux => "\"endless-sky\" (or an Endless Sky .AppImage)",
+        Os::Windows => "\"Endless Sky.exe\"",
+        Os::MacOs => "\"Endless Sky.app\"",
+    }
+}
+
+/// True for a folder name like "Endless Sky", "endless-sky" or "Endless_Sky.app".
+fn looks_like_the_game(name: &str) -> bool {
+    let squashed: String = name
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect();
+    squashed.contains("endlesssky")
+}
+
+/// The folders to look in for the game, most likely first: the folder itself, then (in case the
+/// user picked a parent such as `Program Files`, `/Applications`, a Steam library or its
+/// `steamapps/common`) the folders inside it that are named like the game.
+fn game_dir_candidates(folder: &Path) -> Vec<PathBuf> {
+    let mut candidates = vec![folder.to_path_buf()];
+    for parent in [
+        folder.to_path_buf(),
+        folder.join("common"),
+        folder.join("steamapps").join("common"),
+    ] {
+        let Ok(entries) = std::fs::read_dir(&parent) else {
+            continue;
+        };
+        let mut found: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.is_dir()
+                    && p.file_name()
+                        .is_some_and(|n| looks_like_the_game(&n.to_string_lossy()))
+            })
+            .collect();
+        found.sort();
+        candidates.extend(found);
+    }
+    candidates
+}
+
+/// `<library>/steamapps/common/<game>`: the library's `steamapps` folder, if `dir` is inside one.
+fn steamapps_of(dir: &Path) -> Option<PathBuf> {
+    let common = dir.parent()?;
+    let steamapps = common.parent()?;
+    let is = |p: &Path, name: &str| {
+        p.file_name()
+            .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(name))
+    };
+    (is(common, "common") && is(steamapps, "steamapps")).then(|| steamapps.to_path_buf())
+}
+
+/// The game's executable in `dir` for a non-Steam install, if there is one for this OS.
+fn standalone_executable_in(env: &DetectEnv, dir: &Path) -> Option<PathBuf> {
+    let exe = match env.os {
+        Os::Linux => {
+            let native = dir.join("endless-sky");
+            if native.is_file() {
+                native
+            } else {
+                // An AppImage kept next to its data, named like Endless_Sky-x86_64.AppImage.
+                let mut images: Vec<PathBuf> = std::fs::read_dir(dir)
+                    .ok()?
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        let name = p
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_lowercase())
+                            .unwrap_or_default();
+                        name.ends_with(".appimage") && looks_like_the_game(&name) && p.is_file()
+                    })
+                    .collect();
+                images.sort();
+                images.into_iter().next()?
+            }
+        }
+        Os::Windows => dir.join("Endless Sky.exe"),
+        Os::MacOs => {
+            if dir
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("app"))
+            {
+                dir.join("Contents").join("MacOS").join("Endless Sky")
+            } else {
+                dir.join(mac_bundle_executable())
+            }
+        }
+    };
+    exe.is_file().then_some(exe)
+}
+
+/// Works out an install from the folder the game is installed in, so the user only has to say
+/// where the game is: the executable, the kind of install and the config folder (where
+/// `plugins/` and `plugins.txt` live) are all found from there, by the same rules detection
+/// uses. A Steam folder (inside `steamapps/common`) becomes a Steam install; anything else is a
+/// standalone install using the OS's usual config folder. If the user picked a parent folder
+/// (`Program Files`, `/Applications`, a Steam library), the game folder inside it is found.
+pub fn install_from_game_folder(
+    env: &DetectEnv,
+    folder: &Path,
+) -> Result<GameInstall, GameFolderError> {
+    if !folder.is_dir() {
+        return Err(GameFolderError::NotAFolder(folder.to_path_buf()));
+    }
+    for dir in game_dir_candidates(folder) {
+        if let Some(steamapps) = steamapps_of(&dir) {
+            let install = steam_install(env, &steamapps, &dir);
+            if install.executable.is_some() {
+                return Ok(install);
+            }
+        } else if let Some(exe) = standalone_executable_in(env, &dir) {
+            return Ok(GameInstall::standalone(env, exe));
+        }
+    }
+    Err(GameFolderError::NotFound {
+        folder: folder.to_path_buf(),
+        expected: expected_game_files(env.os).to_string(),
+    })
 }
 
 /// Library paths from Steam's `steamapps/libraryfolders.vdf`, in file order. Handles
