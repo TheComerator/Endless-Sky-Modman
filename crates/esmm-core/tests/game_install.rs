@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use esmm_core::game_install::{
     DetectEnv, FLATPAK_APP_ID, FLATPAK_STEAM_APP_ID, GameFolderError, GameInstall, InstallKind,
-    Launch, Os, STEAM_URL, default_config_dir, detect, group_by_config_dir,
+    Launch, Os, STEAM_URL, default_config_dir, detect, find_game_folder, group_by_config_dir,
     install_from_game_folder, launch_command, parse_bundle_version, parse_library_folders,
     parse_reg_query, parse_version_output, query_version, read_bundle_version,
 };
@@ -756,4 +756,133 @@ fn something_that_is_not_a_folder_is_refused() {
         install_from_game_folder(&fake.env, &fake.home("missing")),
         Err(GameFolderError::NotAFolder(_))
     ));
+}
+
+#[test]
+fn the_managers_own_appimage_is_never_taken_for_the_game() {
+    let fake = Fake::new(Os::Linux);
+    // Both live in ~/Applications; the manager's name sorts first.
+    let apps = fake.home("Applications");
+    touch(&apps.join("Endless.Sky.Mod.Manager_0.2.1_amd64.AppImage"));
+    touch(&apps.join("Endless Sky Mod Manager_0.2.1_amd64.AppImage"));
+    touch(&apps.join("Endless_Sky-x86_64.AppImage"));
+    let picked = install_from_game_folder(&fake.env, &apps).unwrap();
+    assert_eq!(
+        picked.executable,
+        Some(apps.join("Endless_Sky-x86_64.AppImage"))
+    );
+    // Automatic detection has the same rule.
+    let detected = detect(&fake.env);
+    assert!(
+        detected.iter().all(|i| !i
+            .executable
+            .as_ref()
+            .is_some_and(|e| e.to_string_lossy().to_lowercase().contains("manager"))),
+        "{detected:?}"
+    );
+    assert_eq!(
+        detected.iter().filter(|i| i.executable.is_some()).count(),
+        1
+    );
+
+    // Alone, the manager's AppImage is not the game: there is nothing to find.
+    let downloads = fake.home("Downloads");
+    touch(&downloads.join("Endless_Sky_Mod_Manager-x86_64.AppImage"));
+    assert!(matches!(
+        install_from_game_folder(&fake.env, &downloads),
+        Err(GameFolderError::NotFound { .. })
+    ));
+}
+
+#[test]
+fn the_newest_of_several_appimages_in_one_folder_is_used() {
+    use std::time::{Duration, SystemTime};
+    let fake = Fake::new(Os::Linux);
+    let dir = fake.home("Games/ES");
+    let old = dir.join("Endless_Sky-0.10.0-x86_64.AppImage");
+    let new = dir.join("Endless_Sky-0.9.0-x86_64.AppImage"); // sorts later, but is the newer file
+    touch(&old);
+    touch(&new);
+    let set = |p: &Path, secs: u64| {
+        fs::File::options()
+            .write(true)
+            .open(p)
+            .unwrap()
+            .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(secs))
+            .unwrap();
+    };
+    set(&old, 1_000);
+    set(&new, 2_000);
+    assert_eq!(
+        install_from_game_folder(&fake.env, &dir)
+            .unwrap()
+            .executable,
+        Some(new)
+    );
+}
+
+#[test]
+fn several_games_in_a_parent_folder_are_reported_not_guessed() {
+    let fake = Fake::new(Os::Linux);
+    let games = fake.home("Games");
+    touch(&games.join("Endless Sky 0.9.16/endless-sky"));
+    touch(&games.join("Endless Sky 0.10.5/endless-sky"));
+    mkdir(&games.join("endless-sky-plugins-dev")); // named like the game, holds no game
+    let err = install_from_game_folder(&fake.env, &games).unwrap_err();
+    let text = err.to_string();
+    assert!(
+        matches!(&err, GameFolderError::Several { found, .. } if found.len() == 2),
+        "{err:?}"
+    );
+    assert!(
+        text.contains("Endless Sky 0.9.16") && text.contains("Endless Sky 0.10.5"),
+        "{text}"
+    );
+    // Naming one of them directly works.
+    let found = find_game_folder(&fake.env, &games.join("Endless Sky 0.10.5")).unwrap();
+    assert_eq!(found.game_dir, games.join("Endless Sky 0.10.5"));
+}
+
+#[test]
+fn the_game_folder_that_was_found_is_reported_not_the_parent_that_was_picked() {
+    let fake = Fake::new(Os::Linux);
+    let library = fake.home("SteamLibrary");
+    steam_library(&library, &["endless-sky"]);
+    let found = find_game_folder(&fake.env, &library).unwrap();
+    assert_eq!(found.game_dir, library.join("steamapps/common/Endless Sky"));
+    // A trailing slash on the picked path makes no difference.
+    let with_slash = PathBuf::from(format!("{}/", library.display()));
+    assert_eq!(
+        find_game_folder(&fake.env, &with_slash).unwrap().game_dir,
+        found.game_dir
+    );
+}
+
+#[test]
+fn a_steam_app_bundle_picked_directly_is_still_a_steam_install() {
+    let fake = Fake::new(Os::MacOs);
+    let library = fake.home("Library/Application Support/Steam");
+    let game = library.join("steamapps/common/Endless Sky");
+    touch(&game.join("Endless Sky.app/Contents/MacOS/Endless Sky"));
+    let found = find_game_folder(&fake.env, &game.join("Endless Sky.app")).unwrap();
+    assert_eq!(found.install.kind, InstallKind::Steam);
+    assert_eq!(found.install.launch, Launch::Steam);
+    assert_eq!(found.game_dir, game.join("Endless Sky.app"));
+}
+
+#[test]
+fn error_messages_show_paths_plainly_without_debug_escapes() {
+    let fake = Fake::new(Os::Linux);
+    let empty = fake.home("Games/nothing");
+    mkdir(&empty);
+    let text = install_from_game_folder(&fake.env, &empty)
+        .unwrap_err()
+        .to_string();
+    assert!(text.contains(&empty.display().to_string()), "{text}");
+    assert!(!text.contains("\\\""), "no quote-escaped path in {text}");
+    let missing = fake.home("missing");
+    let text = install_from_game_folder(&fake.env, &missing)
+        .unwrap_err()
+        .to_string();
+    assert_eq!(text, format!("{} isn't a folder.", missing.display()));
 }

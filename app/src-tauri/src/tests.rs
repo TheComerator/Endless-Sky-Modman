@@ -1301,6 +1301,75 @@ fn a_game_folder_that_does_not_hold_the_game_is_explained_not_added() {
 }
 
 #[test]
+fn the_folder_the_game_was_found_in_is_remembered_not_the_parent_that_was_picked() {
+    let machine = tempfile::tempdir().unwrap();
+    let w = World::bare_with_env(Some(fake_linux(machine.path())));
+    let games = machine.path().join("Games");
+    let game = games.join("Endless Sky");
+    fs::create_dir_all(&game).unwrap();
+    fs::write(game.join("endless-sky"), "").unwrap();
+    w.shell.add_game_folder(games.to_str().unwrap()).unwrap();
+    let settings = crate::settings::Settings::load(&w.dir.path().join("app-data"));
+    assert_eq!(
+        settings.custom[0].game_folder.as_deref(),
+        Some(game.as_path())
+    );
+
+    // A second game appearing beside it later can't change which one is meant.
+    let other = games.join("Endless Sky 0.9");
+    fs::create_dir_all(&other).unwrap();
+    fs::write(other.join("endless-sky"), "").unwrap();
+    let installs = w.shell.list_installs(false);
+    assert_eq!(installs.installs.len(), 1);
+    assert_eq!(
+        installs.installs[0].executable.as_deref(),
+        game.join("endless-sky").to_str()
+    );
+}
+
+#[test]
+fn quotes_around_a_pasted_path_are_ignored() {
+    let machine = tempfile::tempdir().unwrap();
+    let w = World::bare_with_env(Some(fake_linux(machine.path())));
+    let game = machine.path().join("Games/Endless Sky");
+    fs::create_dir_all(&game).unwrap();
+    fs::write(game.join("endless-sky"), "").unwrap();
+    // Windows' "Copy as path" wraps the path in quotes.
+    let quoted = format!("  \"{}\"  ", game.display());
+    assert_eq!(w.shell.add_game_folder(&quoted).unwrap().installs.len(), 1);
+    let err = w.shell.add_game_folder("Games/Endless Sky").unwrap_err();
+    assert!(err.message().contains("full path"), "{}", err.message());
+}
+
+#[test]
+fn a_game_that_is_already_detected_is_selected_not_listed_twice() {
+    let machine = tempfile::tempdir().unwrap();
+    let env = fake_linux(machine.path());
+    // A system-wide install that automatic detection finds.
+    let usr_games = env.root.join("usr/games");
+    fs::create_dir_all(&usr_games).unwrap();
+    fs::write(usr_games.join("endless-sky"), "").unwrap();
+    let w = World::bare_with_env(Some(env));
+    let detected = w.shell.list_installs(false);
+    assert_eq!(detected.installs.len(), 1);
+    assert!(!detected.installs[0].user_added);
+
+    // The user points at the same folder, spelled another way.
+    let spelled_differently = format!("{}/../games", usr_games.display());
+    let installs = w.shell.add_game_folder(&spelled_differently).unwrap();
+    assert_eq!(installs.installs.len(), 1, "no duplicate row");
+    assert_eq!(
+        installs.selected.as_deref(),
+        Some(detected.installs[0].key.as_str())
+    );
+    assert!(
+        crate::settings::Settings::load(&w.dir.path().join("app-data"))
+            .custom
+            .is_empty()
+    );
+}
+
+#[test]
 fn a_steam_game_folder_becomes_a_steam_install_that_launches_through_steam() {
     let machine = tempfile::tempdir().unwrap();
     let w = World::bare_with_env(Some(fake_linux(machine.path())));

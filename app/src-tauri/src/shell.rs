@@ -554,7 +554,8 @@ impl Shell {
     /// executable, the kind of install (Steam or not) and the config folder are all found from
     /// the folder (`game_install::install_from_game_folder`), so the user only picks one folder.
     pub fn add_game_folder(&self, path: &str) -> CmdResult<InstallsView> {
-        let path = path.trim();
+        // "Copy as path" in Windows Explorer puts quotes around the path.
+        let path = path.trim().trim_matches('"').trim();
         if path.is_empty() {
             return Err(CmdError::invalid(
                 "Pick the folder Endless Sky is installed in.",
@@ -562,30 +563,44 @@ impl Shell {
         }
         if !Path::new(path).is_absolute() {
             return Err(CmdError::invalid(
-                "The game folder must be an absolute path.",
+                "Type the full path of the folder (like C:\\Games\\Endless Sky or /home/you/Games/endless-sky), or use Browse.",
             ));
         }
         let env = self.deps.env.as_ref().ok_or_else(|| {
             CmdError::invalid("Can't find your home folder, so the game folder can't be checked.")
         })?;
-        let folder = PathBuf::from(path);
-        let install = game_install::install_from_game_folder(env, &folder)
+        let found = game_install::find_game_folder(env, Path::new(path))
             .map_err(|e| CmdError::invalid(e.to_string()))?;
-        let key = install_key(&install);
-        tracing::info!(folder = %folder.display(), kind = ?install.kind, "game folder added");
+        let key = install_key(&found.install);
 
         let _op = lock(&self.op_lock);
         let mut settings = Settings::load(&self.deps.data_dir);
-        let custom = CustomInstall {
-            config_dir: None,
-            executable: None,
-            game_folder: Some(folder),
+        // The same install may already be detected automatically, only spelled differently (a
+        // symlinked Steam folder, a drive letter in another case): then select that one rather
+        // than listing it twice.
+        let detected = self
+            .all_installs(&settings)
+            .into_iter()
+            .find(|(_, install, user_added)| !user_added && same_install(install, &found.install));
+        let key = match detected {
+            Some((detected_key, _, _)) => detected_key,
+            None => {
+                // What is remembered is the folder the game was found in, not a parent that was
+                // picked, so a new sibling folder later can't change which game is meant.
+                let custom = CustomInstall {
+                    config_dir: None,
+                    executable: None,
+                    game_folder: Some(found.game_dir.clone()),
+                };
+                if !settings.custom.contains(&custom) {
+                    settings.custom.push(custom);
+                }
+                key
+            }
         };
-        if !settings.custom.contains(&custom) {
-            settings.custom.push(custom);
-        }
         settings.selected = Some(key);
         settings.save(&self.deps.data_dir)?;
+        tracing::info!(folder = %found.game_dir.display(), kind = ?found.install.kind, "game folder added");
         self.reset_plans();
         drop(_op);
         Ok(self.list_installs(false))
@@ -620,7 +635,7 @@ impl Shell {
         let selected = self.selected().ok_or_else(CmdError::no_install)?;
         if selected.install.launch == Launch::Unknown {
             return Err(CmdError::invalid(
-                "No known way to start this install. Add its executable in Settings.",
+                "No known way to start this install. Pick the game folder in Settings → Game Folder.",
             ));
         }
         (self.deps.launch)(&selected.install)
@@ -1353,6 +1368,14 @@ fn simple_pending_with_root(
         unmanaged_target: false,
         root_identity,
     }
+}
+
+/// Whether two installs are the same one, however their paths happen to be spelled.
+fn same_install(a: &GameInstall, b: &GameInstall) -> bool {
+    let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    a.kind == b.kind
+        && canon(&a.config_dir) == canon(&b.config_dir)
+        && a.executable.as_deref().map(canon) == b.executable.as_deref().map(canon)
 }
 
 fn find_entry<'a>(catalog: &'a [CatalogEntry], name: &str) -> CmdResult<&'a CatalogEntry> {
