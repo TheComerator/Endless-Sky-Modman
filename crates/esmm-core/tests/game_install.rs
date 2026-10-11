@@ -6,10 +6,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use esmm_core::game_install::{
-    DetectEnv, FLATPAK_APP_ID, FLATPAK_STEAM_APP_ID, GameInstall, InstallKind, Launch, Os,
-    STEAM_URL, default_config_dir, detect, group_by_config_dir, launch_command,
-    parse_bundle_version, parse_library_folders, parse_reg_query, parse_version_output,
-    query_version, read_bundle_version,
+    DetectEnv, FLATPAK_APP_ID, FLATPAK_STEAM_APP_ID, GameFolderError, GameInstall, InstallKind,
+    Launch, Os, STEAM_URL, default_config_dir, detect, group_by_config_dir,
+    install_from_game_folder, launch_command, parse_bundle_version, parse_library_folders,
+    parse_reg_query, parse_version_output, query_version, read_bundle_version,
 };
 use tempfile::TempDir;
 
@@ -580,4 +580,180 @@ fn bundle_version_ignores_other_layouts() {
     let tmp = TempDir::new().unwrap();
     fs::write(tmp.path().join("Info.plist"), REAL_INFO_PLIST).unwrap();
     assert_eq!(read_bundle_version(&tmp.path().join("endless-sky")), None);
+}
+
+// ---------------------------------------------------------------------------
+// Pointing at the game folder by hand
+// ---------------------------------------------------------------------------
+
+#[test]
+fn game_folder_linux_native_finds_the_executable_and_the_usual_config_dir() {
+    let fake = Fake::new(Os::Linux);
+    let dir = fake.home("Games/endless-sky-0.10");
+    touch(&dir.join("endless-sky"));
+    touch(&dir.join("data/map.txt"));
+    let install = install_from_game_folder(&fake.env, &dir).unwrap();
+    assert_eq!(install.kind, InstallKind::Standalone);
+    assert_eq!(install.executable, Some(dir.join("endless-sky")));
+    assert_eq!(install.config_dir, fake.home(".local/share/endless-sky"));
+    let command = launch_command(&install, Os::Linux).unwrap();
+    assert_eq!(command.get_program(), dir.join("endless-sky").as_os_str());
+    assert_eq!(command.get_args().count(), 0);
+}
+
+#[test]
+fn game_folder_follows_xdg_data_home_for_the_config_dir() {
+    let mut fake = Fake::new(Os::Linux);
+    let xdg = fake.home("elsewhere");
+    fake.var("XDG_DATA_HOME", &xdg);
+    let dir = fake.home("Games/es");
+    touch(&dir.join("endless-sky"));
+    let install = install_from_game_folder(&fake.env, &dir).unwrap();
+    assert_eq!(install.config_dir, xdg.join("endless-sky"));
+}
+
+#[test]
+fn game_folder_in_a_steam_library_is_a_steam_install() {
+    let fake = Fake::new(Os::Linux);
+    let library = fake.home("SteamLibrary");
+    steam_library(&library, &["endless-sky"]);
+    let game = library.join("steamapps/common/Endless Sky");
+    let install = install_from_game_folder(&fake.env, &game).unwrap();
+    assert_eq!(install.kind, InstallKind::Steam);
+    assert_eq!(install.launch, Launch::Steam);
+    assert_eq!(install.executable, Some(game.join("endless-sky")));
+    assert_eq!(install.config_dir, fake.home(".local/share/endless-sky"));
+}
+
+#[test]
+fn a_steam_library_or_its_common_folder_leads_to_the_game_inside() {
+    let fake = Fake::new(Os::Linux);
+    let library = fake.home("SteamLibrary");
+    steam_library(&library, &["endless-sky"]);
+    mkdir(&library.join("steamapps/common/Some Other Game"));
+    let game = library.join("steamapps/common/Endless Sky");
+    for picked in [
+        library.clone(),
+        library.join("steamapps"),
+        library.join("steamapps/common"),
+    ] {
+        let install = install_from_game_folder(&fake.env, &picked).unwrap();
+        assert_eq!(install.kind, InstallKind::Steam, "{picked:?}");
+        assert_eq!(
+            install.executable,
+            Some(game.join("endless-sky")),
+            "{picked:?}"
+        );
+    }
+}
+
+#[test]
+fn a_proton_steam_folder_uses_the_wine_prefix_config_dir() {
+    let fake = Fake::new(Os::Linux);
+    let library = fake.home("SteamLibrary");
+    steam_library(&library, &["Endless Sky.exe"]);
+    let game = library.join("steamapps/common/Endless Sky");
+    let install = install_from_game_folder(&fake.env, &game).unwrap();
+    assert_eq!(install.kind, InstallKind::Steam);
+    assert_eq!(install.executable, Some(game.join("Endless Sky.exe")));
+    assert_eq!(
+        install.config_dir,
+        library.join(
+            "steamapps/compatdata/404410/pfx/drive_c/users/steamuser/AppData/Roaming/endless-sky"
+        )
+    );
+}
+
+#[test]
+fn game_folder_windows_standalone_and_steam() {
+    let mut fake = Fake::new(Os::Windows);
+    let appdata = fake.home("AppData/Roaming");
+    fake.var("APPDATA", &appdata);
+    // A standalone install, picked directly or through "Program Files".
+    let program_files = fake.root("Program Files");
+    touch(&program_files.join("Endless Sky/Endless Sky.exe"));
+    mkdir(&program_files.join("Other App"));
+    for picked in [program_files.join("Endless Sky"), program_files.clone()] {
+        let install = install_from_game_folder(&fake.env, &picked).unwrap();
+        assert_eq!(install.kind, InstallKind::Standalone, "{picked:?}");
+        assert_eq!(
+            install.executable,
+            Some(program_files.join("Endless Sky/Endless Sky.exe"))
+        );
+        assert_eq!(install.config_dir, appdata.join("endless-sky"));
+    }
+    // A Steam copy.
+    let library = fake.root("Steam");
+    steam_library(&library, &["Endless Sky.exe"]);
+    let game = library.join("steamapps/common/Endless Sky");
+    let install = install_from_game_folder(&fake.env, &game).unwrap();
+    assert_eq!(install.kind, InstallKind::Steam);
+    assert_eq!(install.config_dir, appdata.join("endless-sky"));
+}
+
+#[test]
+fn game_folder_macos_bundle_in_the_folder_the_folder_above_or_itself() {
+    let fake = Fake::new(Os::MacOs);
+    let apps = fake.root("Applications");
+    let exe = apps.join("Endless Sky.app/Contents/MacOS/Endless Sky");
+    touch(&exe);
+    mkdir(&apps.join("Safari.app"));
+    for picked in [apps.clone(), apps.join("Endless Sky.app")] {
+        let install = install_from_game_folder(&fake.env, &picked).unwrap();
+        assert_eq!(install.executable, Some(exe.clone()), "{picked:?}");
+        assert_eq!(
+            install.config_dir,
+            fake.home("Library/Application Support/endless-sky")
+        );
+    }
+}
+
+#[test]
+fn game_folder_with_an_appimage_inside_on_linux() {
+    let fake = Fake::new(Os::Linux);
+    let dir = fake.home("Games/ES");
+    touch(&dir.join("Endless_Sky-x86_64.AppImage"));
+    touch(&dir.join("notes-endless.AppImage")); // not the game
+    let install = install_from_game_folder(&fake.env, &dir).unwrap();
+    assert_eq!(
+        install.executable,
+        Some(dir.join("Endless_Sky-x86_64.AppImage"))
+    );
+}
+
+#[test]
+fn a_folder_without_the_game_says_what_was_expected() {
+    let fake = Fake::new(Os::Linux);
+    let empty = fake.home("Games/nothing");
+    mkdir(&empty);
+    let err = install_from_game_folder(&fake.env, &empty).unwrap_err();
+    assert!(matches!(&err, GameFolderError::NotFound { .. }), "{err:?}");
+    let text = err.to_string();
+    assert!(
+        text.contains("endless-sky") && text.contains("nothing"),
+        "{text}"
+    );
+
+    // The Windows build is no use outside Steam on Linux, so it isn't mistaken for the game.
+    let windows_only = fake.home("Games/win");
+    touch(&windows_only.join("Endless Sky.exe"));
+    assert!(matches!(
+        install_from_game_folder(&fake.env, &windows_only),
+        Err(GameFolderError::NotFound { .. })
+    ));
+}
+
+#[test]
+fn something_that_is_not_a_folder_is_refused() {
+    let fake = Fake::new(Os::Linux);
+    let file = fake.home("Games/endless-sky");
+    touch(&file);
+    assert!(matches!(
+        install_from_game_folder(&fake.env, &file),
+        Err(GameFolderError::NotAFolder(_))
+    ));
+    assert!(matches!(
+        install_from_game_folder(&fake.env, &fake.home("missing")),
+        Err(GameFolderError::NotAFolder(_))
+    ));
 }
