@@ -638,9 +638,19 @@ pub fn plan_update(folder: &str, ctx: &PlanContext) -> Result<UpdatePlan, String
         .iter()
         .find(|e| e.name == record.catalog_name)
         .ok_or_else(|| format!("{:?} is no longer in the catalog", record.catalog_name))?;
-    let staged = stage_download(ctx, entry).inspect_err(|e| {
+    let mut staged = stage_download(ctx, entry).inspect_err(|e| {
         tracing::warn!(folder, error = e, "update plan failed to download");
     })?;
+    // An update replaces the folder the plugin is in right now, whatever it is called there
+    // (a plugin adopted from a differently named folder, or one the load-order feature gave a
+    // number prefix); installing under the catalog's name would leave two copies behind. A
+    // folder name the installer wouldn't itself produce (say a trailing dot) can't be
+    // installed into, so that case keeps the old behaviour of using the catalog's name.
+    if install::sanitize_folder_name(&current.folder) == current.folder {
+        staged.folder = current.folder.clone();
+        // Without a `name` in plugin.txt the folder name is the identity, so it moves with it.
+        staged.identity = staged.meta.identity(&staged.folder).to_string();
+    }
 
     let currently_enabled = game_state::effective_enabled(ctx.states, &current.identity);
     // Only walk the new version's requirements if it's actually going to be enabled; nothing
@@ -796,6 +806,7 @@ pub fn adopt_candidates(
                     version: String::new(),
                     source_url: entry.url.clone(),
                     sha256: String::new(),
+                    original_folder: None,
                 });
             }
             CatalogMatch::Ambiguous(candidates) => result.needs_user.push(UnmanagedPlugin {
@@ -890,7 +901,17 @@ fn persist_changes(
     let mut records =
         records::load(ctx.records_path).map_err(|e| CommitError::Io(e.to_string()))?;
     for record in changes.upsert_records {
-        records.insert(record.folder.clone(), record.clone());
+        let mut record = record.clone();
+        // An update replaces a record in place; it must not forget that the folder was
+        // renamed by the load-order feature (and what it was called before). Only the same
+        // plugin's own record counts, never a leftover that happens to share the folder name.
+        if record.original_folder.is_none() {
+            record.original_folder = records
+                .get(&record.folder)
+                .filter(|old| old.catalog_name == record.catalog_name)
+                .and_then(|old| old.original_folder.clone());
+        }
+        records.insert(record.folder.clone(), record);
     }
     for folder in changes.remove_records {
         records.remove(folder);
@@ -929,6 +950,21 @@ fn persist_changes(
         .map_err(|e| CommitError::Io(e.to_string()))?;
 
     Ok(outcome)
+}
+
+/// An update replaces a plugin that is already installed; if its folder has vanished or been
+/// renamed since the plan was made (the load-order feature renames folders), the plan is
+/// stale and must not quietly install a second copy under the old name.
+fn ensure_update_target_exists(plugins_dir: &Path, plan: &UpdatePlan) -> Result<(), CommitError> {
+    if plan.folder == plan.staged.folder
+        && fs::symlink_metadata(plugins_dir.join(&plan.folder)).is_err()
+    {
+        return Err(CommitError::Io(format!(
+            "{:?} is no longer installed under that name; plan the update again",
+            plan.folder
+        )));
+    }
+    Ok(())
 }
 
 fn refuse_if_blocked(issues: &[Issue], override_issues: bool) -> Result<(), CommitError> {
@@ -1030,6 +1066,7 @@ fn commit_inner(
                             version: staged.version,
                             source_url: staged.source_url,
                             sha256: staged.sha256,
+                            original_folder: None,
                         });
                         installed.push(result);
                     }
@@ -1211,6 +1248,7 @@ fn commit_update_inner(
     let game = refuse_if_game_running(ctx.detect_game)?;
     let plugins_dir = install::plugins_dir(ctx.config_dir);
     let tmp_dir = install::tmp_dir(ctx.config_dir);
+    ensure_update_target_exists(&plugins_dir, &plan)?;
 
     let mut installed = Vec::new();
     let mut upsert_records = Vec::new();
@@ -1230,6 +1268,7 @@ fn commit_update_inner(
                             version: staged.version,
                             source_url: staged.source_url,
                             sha256: staged.sha256,
+                            original_folder: None,
                         });
                         installed.push(result);
                     }
@@ -1271,6 +1310,7 @@ fn commit_update_inner(
                 version: staged.version,
                 source_url: staged.source_url,
                 sha256: staged.sha256,
+                original_folder: None,
             });
             installed.push(result);
         }
@@ -1340,6 +1380,9 @@ fn commit_update_all_inner(
 
     let plugins_dir = install::plugins_dir(ctx.config_dir);
     let tmp_dir = install::tmp_dir(ctx.config_dir);
+    for plan in &plans {
+        ensure_update_target_exists(&plugins_dir, plan)?;
+    }
 
     let mut installed = Vec::new();
     let mut upsert_records = Vec::new();
@@ -1360,6 +1403,7 @@ fn commit_update_all_inner(
                                 version: staged.version,
                                 source_url: staged.source_url,
                                 sha256: staged.sha256,
+                                original_folder: None,
                             });
                             installed.push(result);
                         }
@@ -1401,6 +1445,7 @@ fn commit_update_all_inner(
                     version: staged.version,
                     source_url: staged.source_url,
                     sha256: staged.sha256,
+                    original_folder: None,
                 });
                 installed.push(result);
             }
@@ -1490,6 +1535,7 @@ mod tests {
                 version: version.into(),
                 source_url: "https://example.com/a.zip".into(),
                 sha256: String::new(),
+                original_folder: None,
             }
         }
         let catalog = [entry("Foo", "v2")];
