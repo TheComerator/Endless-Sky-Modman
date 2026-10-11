@@ -9,6 +9,7 @@ pub mod load_order;
 pub mod manager;
 pub mod overlap;
 pub mod plugin_meta;
+pub mod plugin_naming; // load order: "give it a name" (see plugin_naming.rs before deleting)
 pub mod plugin_state;
 pub mod profiles;
 pub mod records;

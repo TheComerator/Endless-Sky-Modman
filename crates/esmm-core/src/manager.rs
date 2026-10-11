@@ -18,6 +18,7 @@ use crate::download::Downloaded;
 use crate::game_state::{self, GameProcess};
 use crate::install::{self, InstallError, Installed};
 use crate::plugin_meta::PluginMeta;
+use crate::plugin_naming;
 use crate::plugin_state::PluginStates;
 use crate::profiles::ProfileStore;
 use crate::records::{self, InstallRecord, InstallRecords};
@@ -153,6 +154,10 @@ pub struct StagedPlugin {
     pub version: String,
     pub source_url: String,
     pub sha256: String,
+    /// Set by the commit (see `put_back_added_names`): the name the manager wrote back into
+    /// this copy's plugin.txt, for the new install record. `None` until then, and for nearly
+    /// every plugin.
+    added_name: Option<String>,
 }
 
 fn stage_download(ctx: &PlanContext, entry: &CatalogEntry) -> Result<StagedPlugin, String> {
@@ -173,7 +178,7 @@ fn stage_download(ctx: &PlanContext, entry: &CatalogEntry) -> Result<StagedPlugi
     };
     let folder = install::sanitize_folder_name(&entry.name);
     let identity = meta.identity(&folder).to_string();
-    Ok(StagedPlugin {
+    let mut staged = StagedPlugin {
         staging,
         root,
         folder,
@@ -183,7 +188,28 @@ fn stage_download(ctx: &PlanContext, entry: &CatalogEntry) -> Result<StagedPlugi
         version: entry.version.clone(),
         source_url: entry.url.clone(),
         sha256: downloaded.sha256,
-    })
+        added_name: None,
+    };
+    // Reinstalling into a folder whose record says the manager added a name (only reachable
+    // through a requirement; the shell refuses a plain install of an installed plugin).
+    let record = ctx
+        .records
+        .get(&staged.folder)
+        .filter(|r| r.catalog_name == staged.catalog_name);
+    expect_added_name(&mut staged, record);
+    Ok(staged)
+}
+
+/// Plugin naming hook (the optional load-order feature's "give it a name" step, see
+/// `plugin_naming`). An update replaces the whole folder, and the download doesn't have the
+/// `name` line the manager added, so the commit writes it back in (`put_back_added_names`).
+/// Planning must expect that, or the new copy would be checked under its folder name and
+/// show false problems (a requirement on the name looking unmet, a duplicate identity...).
+fn expect_added_name(staged: &mut StagedPlugin, record: Option<&InstallRecord>) {
+    if let Some(name) = plugin_naming::name_to_reapply(record, &staged.meta) {
+        staged.identity = name.clone();
+        staged.meta.name = Some(name);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -651,6 +677,8 @@ pub fn plan_update(folder: &str, ctx: &PlanContext) -> Result<UpdatePlan, String
         // Without a `name` in plugin.txt the folder name is the identity, so it moves with it.
         staged.identity = staged.meta.identity(&staged.folder).to_string();
     }
+    // Plugin naming: a name the manager added is put back at commit; plan with it.
+    expect_added_name(&mut staged, Some(record));
 
     let currently_enabled = game_state::effective_enabled(ctx.states, &current.identity);
     // Only walk the new version's requirements if it's actually going to be enabled; nothing
@@ -807,6 +835,7 @@ pub fn adopt_candidates(
                     source_url: entry.url.clone(),
                     sha256: String::new(),
                     original_folder: None,
+                    added_name: None,
                 });
             }
             CatalogMatch::Ambiguous(candidates) => result.needs_user.push(UnmanagedPlugin {
@@ -911,6 +940,9 @@ fn persist_changes(
                 .filter(|old| old.catalog_name == record.catalog_name)
                 .and_then(|old| old.original_folder.clone());
         }
+        // `added_name` is deliberately not carried over the same way: every commit that builds
+        // a record sets it from what it actually installed (`put_back_added_names`), and an
+        // update whose new version names itself must clear it.
         records.insert(record.folder.clone(), record);
     }
     for folder in changes.remove_records {
@@ -965,6 +997,50 @@ fn ensure_update_target_exists(plugins_dir: &Path, plan: &UpdatePlan) -> Result<
         )));
     }
     Ok(())
+}
+
+/// Plugin naming hook, run by every commit before anything is installed: for each downloaded
+/// copy about to replace a plugin the manager once gave a name to (its record has
+/// `added_name`), writes that name back into the copy while it is still in staging, so it
+/// arrives in `plugins/` already named and its identity never changes
+/// (`plugin_naming::reapply_to_staged`). The result is kept for the new record. Each copy is
+/// matched to the record of the folder it will replace.
+fn put_back_added_names(
+    ctx: &CommitContext,
+    records: &InstallRecords,
+    steps: &mut [PlanStep],
+) -> Result<(), CommitError> {
+    for step in steps {
+        if let PlanStep::Install(staged) = step {
+            let folder = staged.folder.clone();
+            put_back_added_name(ctx, records, &folder, staged)?;
+        }
+    }
+    Ok(())
+}
+
+/// The same for one copy; `record_folder` is the folder it replaces (for an update, the folder
+/// the plugin is in now).
+fn put_back_added_name(
+    ctx: &CommitContext,
+    records: &InstallRecords,
+    record_folder: &str,
+    staged: &mut StagedPlugin,
+) -> Result<(), CommitError> {
+    let record = records
+        .get(record_folder)
+        .filter(|r| r.catalog_name == staged.catalog_name);
+    staged.added_name = plugin_naming::reapply_to_staged(
+        &staged.root,
+        record,
+        &plugin_naming::backup_dir(ctx.records_path),
+    )
+    .map_err(|e| CommitError::Io(e.to_string()))?;
+    Ok(())
+}
+
+fn load_records(ctx: &CommitContext) -> Result<InstallRecords, CommitError> {
+    records::load(ctx.records_path).map_err(|e| CommitError::Io(e.to_string()))
 }
 
 fn refuse_if_blocked(issues: &[Issue], override_issues: bool) -> Result<(), CommitError> {
@@ -1047,13 +1123,15 @@ fn commit_inner(
 
     let plugins_dir = install::plugins_dir(ctx.config_dir);
     let tmp_dir = install::tmp_dir(ctx.config_dir);
+    let mut steps = plan.steps;
+    put_back_added_names(ctx, &load_records(ctx)?, &mut steps)?;
 
     let mut installed = Vec::new();
     let mut new_records = Vec::new();
     let mut to_enable = Vec::new();
     let mut to_disable = Vec::new();
 
-    for step in plan.steps {
+    for step in steps {
         match step {
             PlanStep::Install(staged) => {
                 match install::install(&staged.root, &plugins_dir, &tmp_dir, &staged.folder) {
@@ -1067,6 +1145,7 @@ fn commit_inner(
                             source_url: staged.source_url,
                             sha256: staged.sha256,
                             original_folder: None,
+                            added_name: staged.added_name,
                         });
                         installed.push(result);
                     }
@@ -1249,6 +1328,10 @@ fn commit_update_inner(
     let plugins_dir = install::plugins_dir(ctx.config_dir);
     let tmp_dir = install::tmp_dir(ctx.config_dir);
     ensure_update_target_exists(&plugins_dir, &plan)?;
+    let mut plan = plan;
+    let records = load_records(ctx)?;
+    put_back_added_names(ctx, &records, &mut plan.new_requirements)?;
+    put_back_added_name(ctx, &records, &plan.folder, &mut plan.staged)?;
 
     let mut installed = Vec::new();
     let mut upsert_records = Vec::new();
@@ -1269,6 +1352,7 @@ fn commit_update_inner(
                             source_url: staged.source_url,
                             sha256: staged.sha256,
                             original_folder: None,
+                            added_name: staged.added_name,
                         });
                         installed.push(result);
                     }
@@ -1311,6 +1395,7 @@ fn commit_update_inner(
                 source_url: staged.source_url,
                 sha256: staged.sha256,
                 original_folder: None,
+                added_name: staged.added_name,
             });
             installed.push(result);
         }
@@ -1383,6 +1468,12 @@ fn commit_update_all_inner(
     for plan in &plans {
         ensure_update_target_exists(&plugins_dir, plan)?;
     }
+    let mut plans = plans;
+    let records = load_records(ctx)?;
+    for plan in &mut plans {
+        put_back_added_names(ctx, &records, &mut plan.new_requirements)?;
+        put_back_added_name(ctx, &records, &plan.folder, &mut plan.staged)?;
+    }
 
     let mut installed = Vec::new();
     let mut upsert_records = Vec::new();
@@ -1404,6 +1495,7 @@ fn commit_update_all_inner(
                                 source_url: staged.source_url,
                                 sha256: staged.sha256,
                                 original_folder: None,
+                                added_name: staged.added_name,
                             });
                             installed.push(result);
                         }
@@ -1446,6 +1538,7 @@ fn commit_update_all_inner(
                     source_url: staged.source_url,
                     sha256: staged.sha256,
                     original_folder: None,
+                    added_name: staged.added_name,
                 });
                 installed.push(result);
             }
@@ -1536,6 +1629,7 @@ mod tests {
                 source_url: "https://example.com/a.zip".into(),
                 sha256: String::new(),
                 original_folder: None,
+                added_name: None,
             }
         }
         let catalog = [entry("Foo", "v2")];

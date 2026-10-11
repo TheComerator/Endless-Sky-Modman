@@ -505,6 +505,7 @@ mod tests {
                     source_url: "https://example.com/x.zip".into(),
                     sha256: "hash".into(),
                     original_folder: None,
+                    added_name: None,
                 },
             );
             records::save(&path, &records).unwrap();

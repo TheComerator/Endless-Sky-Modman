@@ -26,6 +26,14 @@ pub struct InstallRecord {
     /// was never renamed. Old record files without the field load as `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub original_folder: Option<String>,
+    /// The `name` the manager itself wrote into this plugin's `plugin.txt` (the optional
+    /// "give it a name" step of the load-order feature, `crate::plugin_naming`), because the
+    /// plugin had none. An update replaces the whole folder, which would lose that line, so the
+    /// manager writes it again after every update while this is set. `None` for every other
+    /// plugin; old record files without the field load as `None`, and it is never written when
+    /// `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_name: Option<String>,
 }
 
 /// Keyed by installed folder name.
@@ -69,6 +77,7 @@ mod tests {
             source_url: "https://example.com/a.zip".into(),
             sha256: "ab".repeat(32),
             original_folder: None,
+            added_name: None,
         };
         let mut records = InstallRecords::new();
         records.insert(record.folder.clone(), record);

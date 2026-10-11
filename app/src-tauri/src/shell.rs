@@ -717,6 +717,7 @@ impl Shell {
                 source_url: entry.url.clone(),
                 sha256: String::new(),
                 original_folder: None,
+                added_name: None,
             },
         );
         records::save(&snap.paths.records, &records)?;
