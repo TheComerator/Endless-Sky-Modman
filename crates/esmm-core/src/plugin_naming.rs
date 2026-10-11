@@ -341,9 +341,13 @@ fn write_name_with(
 ) -> Result<(), NamingError> {
     let path = plugin_dir.join(PLUGIN_TXT);
     let contents = with_name_line(original, name)?;
-    // A temporary file is made beside plugin.txt; the atomic write leaves it with owner-only
-    // permissions on Unix, so give it back the old file's (best effort).
-    let permissions = fs::metadata(&path).ok().map(|m| m.permissions());
+    // The atomic write goes through a temporary file, which on Unix is readable by its owner
+    // only; give the result the old file's permissions, or for a new file the folder's minus
+    // the execute bits (best effort).
+    let permissions = fs::metadata(&path)
+        .ok()
+        .map(|m| m.permissions())
+        .or_else(|| new_file_permissions(plugin_dir));
     write(&path, &contents)?;
     if let Some(permissions) = permissions {
         let _ = fs::set_permissions(&path, permissions);
@@ -365,6 +369,18 @@ fn write_name_with(
             "read back {read_back:?}, and putting the old file back failed too: {e}; a copy is in the manager's plugin-txt-backups folder"
         ),
     }))
+}
+
+#[cfg(unix)]
+fn new_file_permissions(dir: &Path) -> Option<fs::Permissions> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = fs::metadata(dir).ok()?.permissions().mode() & 0o666;
+    Some(fs::Permissions::from_mode(mode))
+}
+
+#[cfg(not(unix))]
+fn new_file_permissions(_dir: &Path) -> Option<fs::Permissions> {
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -1406,6 +1422,32 @@ mod tests {
                 .unwrap()
                 .contains("no plugin.txt")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_file_keeps_ordinary_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let w = World::new();
+        w.add("New", None);
+        w.add("Old", Some("about \"x\"\n"));
+        fs::set_permissions(w.dir("New"), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(
+            w.dir("Old").join(PLUGIN_TXT),
+            fs::Permissions::from_mode(0o640),
+        )
+        .unwrap();
+        w.name("New", NameChoice::FolderName);
+        w.name("Old", NameChoice::FolderName);
+        let mode = |folder: &str| {
+            fs::metadata(w.dir(folder).join(PLUGIN_TXT))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        assert_eq!(mode("New"), 0o644, "a new file is readable like the folder");
+        assert_eq!(mode("Old"), 0o640, "an existing file keeps its own");
     }
 
     #[test]

@@ -989,6 +989,11 @@ ul.plain li + li {
   overflow-wrap: anywhere;
 }
 
+/* The backup path is long and has few natural break points. */
+.name-write {
+  overflow-wrap: anywhere;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;

@@ -181,7 +181,7 @@ describe("naming a plugin", () => {
     expect(lines.join(" ")).toContain("record");
     const on = describeNameConsequences(namePlan({ name: "Bar", identityChanges: true, profiles: ["Main"] }));
     expect(on.join(" ")).toContain("switched on and stays on");
-    expect(on.join(" ")).toContain("The profile that include");
+    expect(on.join(" ")).toContain("The profile that includes it switches to the new name: Main.");
   });
 
   it("explains each kind of mention by another plugin", () => {
