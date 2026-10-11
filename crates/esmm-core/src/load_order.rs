@@ -79,7 +79,8 @@
 //!
 //! **List N1, the naming part's core** (all of it is needed for updates while any record has an
 //! `added_name`):
-//! * Files: `crates/esmm-core/src/plugin_naming.rs`, `crates/esmm-core/tests/plugin_naming.rs`
+//! * Files: `crates/esmm-core/src/plugin_naming.rs`, `crates/esmm-core/tests/plugin_naming.rs`,
+//!   and `crates/esmm-core/tests/load_order_naming.rs` (it tests both parts together)
 //! * `crates/esmm-core/src/lib.rs`: `pub mod plugin_naming;`
 //! * `crates/esmm-core/src/manager.rs`: the `use crate::plugin_naming::...` line; the "Plugin
 //!   naming hooks" block (from its banner to "End of the plugin naming hooks"); and each line
@@ -121,11 +122,13 @@
 //!   `app/src/loadOrder.test.ts`: the "naming a plugin" tests, `namePlan`, and the `canName` lines
 //! * `app/src/styles.css`: the `"Give it a name" dialog` block
 //!
-//! Then run `cargo fmt` (deleting lines leaves stray blank lines) and, in cases 1 and 3, delete
-//! the empty `app/src-tauri/src/shell/` folder. Before the naming part existed, list L was
-//! checked in a throwaway copy (`cargo fmt --check`, `cargo clippy --all-targets`,
-//! `cargo test --workspace`, `npm run build` and `npm test` all passed); see `CLAUDE.md`
-//! (decision M) for which of the three cases have been checked since.
+//! Then run `cargo fmt` (deleting lines leaves stray blank lines), in cases 1 and 3 delete the
+//! empty `app/src-tauri/src/shell/` folder, and run `cargo test`, which rewrites the generated
+//! `app/src/bindings/IssueView.ts` (cases 2 and 3) and `LoadOrderExcludedView.ts` (case 2);
+//! keep those changes. Checked on 2026-10-11 in a throwaway copy, applying exactly these lists
+//! with a script: in each of the three cases `cargo fmt --check`, `cargo clippy --all-targets`
+//! (no warnings), `cargo test --workspace`, the TypeScript check, `vite build` and the frontend
+//! tests all passed.
 //!
 //! Documentation is not code and nothing breaks if it stays, but if the feature is removed for
 //! good, also deal with decision M and roadmap item 1d in `CLAUDE.md`, the README bullets,
