@@ -2,7 +2,7 @@
 // file so the feature can be removed by deleting it (crates/esmm-core/src/load_order.rs lists
 // everything involved). The game loads plugins in the order of their folder names, and the
 // plugin loaded last wins where two plugins set the same thing; the manager lets the user pick
-// the order by putting a number in front of the folder names of plugins it installed.
+// the order by putting a number in front of the folder names of plugins it manages.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, asCmdError } from "../api";
@@ -159,9 +159,17 @@ function ReviewDialog({
                 <li key={r.from} className="step step-update">
                   Rename <span className="folder">{r.from}</span> to <span className="folder">{r.to}</span>{" "}
                   <span className="muted">({r.identity})</span>
+                  {r.byHand && <span className="muted"> · folder you added by hand</span>}
                 </li>
               ))}
             </ul>
+          )}
+          {!restore && plan.renames.some((r) => r.byHand) && (
+            <p className="callout warn">
+              Some of these are folders you put in the plugins folder yourself (the manager only linked them to the
+              catalog). Their names will change here, so anything of yours that points at the old folder name (a
+              shortcut, a Git folder, a script) will need the new name. Restore brings the old name back.
+            </p>
           )}
           <p className="callout info">
             Only folder names change. Nothing inside any plugin is touched, and your enabled plugins and profiles carry
@@ -362,7 +370,7 @@ export function LoadOrderView({ loadOrder, manager, notify }: { loadOrder: LoadO
       <p className="muted intro">
         When two plugins change the same ship, outfit or image, the one that loads last wins. The game loads plugins in
         the order of their folder names, so to let you choose, the manager puts a number in front of the folder names of
-        plugins it installed (like <span className="folder">010-Name</span>). Move plugins up or down, then apply. The
+        the plugins it manages (like <span className="folder">010-Name</span>). Move plugins up or down, then apply. The
         top of the list loads first; the bottom wins.
       </p>
 
@@ -409,7 +417,7 @@ export function LoadOrderView({ loadOrder, manager, notify }: { loadOrder: LoadO
       </div>
 
       {plugins.length === 0 ? (
-        <p className="empty muted">No plugin installed by the manager can be ordered yet.</p>
+        <p className="empty muted">No plugin can be ordered yet.</p>
       ) : (
         <ul className="rows">
           {order.map((folder, i) => {
@@ -606,8 +614,8 @@ export function LoadOrderSettings({ loadOrder, manager, notify }: { loadOrder: L
       </label>
       <p id="load-order-help" className="muted">
         The game loads plugins by the order of their folder names. Turn this on to get a Load order page where you
-        choose the order; the manager does it by numbering the folders of plugins it installed. It's off unless you turn
-        it on.
+        choose the order; the manager does it by numbering the folders of the plugins it manages (ones it installed, and hand-added
+        ones it linked to the catalog). It's off unless you turn it on.
       </p>
       {!enabled && renamed > 0 && (
         <p className="callout info">
