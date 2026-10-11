@@ -4,9 +4,12 @@
 // plugin loaded last wins where two plugins set the same thing; the manager lets the user pick
 // the order by putting a number in front of the folder names of plugins it manages.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 
 import { api, asCmdError } from "../api";
 import type { LoadOrderDependencyNote } from "../bindings/LoadOrderDependencyNote";
+import type { LoadOrderNameCommitView } from "../bindings/LoadOrderNameCommitView";
+import type { LoadOrderNamePlanView } from "../bindings/LoadOrderNamePlanView";
 import type { LoadOrderPlanView } from "../bindings/LoadOrderPlanView";
 import type { LoadOrderPreview } from "../bindings/LoadOrderPreview";
 import type { LoadOrder } from "../hooks/useLoadOrder";
@@ -16,6 +19,9 @@ import {
   describeDependencyNote,
   describeExclusion,
   describeGroup,
+  describeNameConsequences,
+  describeNameDependent,
+  describeNameWrite,
   describeSuggestion,
   effectiveOrder,
   formatNumber,
@@ -240,6 +246,242 @@ function ReviewDialog({
   );
 }
 
+/**
+ * "Give it a name": for a plugin left out of the order only because its plugin.txt has no name.
+ * The manager adds one line, `name "…"`, to its plugin.txt: the folder name (the default, which
+ * changes nothing else) or a name the user types (reviewed first, because the game then calls
+ * the plugin something else). See crates/esmm-core/src/plugin_naming.rs.
+ */
+function NameDialog({
+  folder,
+  gameRunning,
+  returnTo,
+  onClose,
+  onDone,
+}: {
+  folder: string;
+  gameRunning: boolean;
+  returnTo: { current: HTMLElement | null };
+  onClose: () => void;
+  onDone: (done: LoadOrderNameCommitView) => Promise<void>;
+}) {
+  // The folder-name option, planned as soon as the dialog opens (or why it can't be used).
+  const [folderPlan, setFolderPlan] = useState<LoadOrderNamePlanView | null>(null);
+  const [folderProblem, setFolderProblem] = useState<string | null>(null);
+  const [choice, setChoice] = useState<"folder" | "typed">("folder");
+  const [typed, setTyped] = useState("");
+  // A typed name's review: the plan, and exactly what was typed (the commit sends that again).
+  const [review, setReview] = useState<{ plan: LoadOrderNamePlanView; typed: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [working, setWorking] = useState(false);
+  const dialogRef = useDialog(onClose, !working, returnTo);
+
+  useEffect(() => {
+    let live = true;
+    api.loadOrderPlanName(folder, null).then(
+      (plan) => live && setFolderPlan(plan),
+      (e) => {
+        if (!live) return;
+        setFolderProblem(asCmdError(e).message);
+        setChoice("typed");
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [folder]);
+
+  const reviewTyped = async () => {
+    setWorking(true);
+    setError(null);
+    try {
+      setReview({ plan: await api.loadOrderPlanName(folder, typed), typed });
+    } catch (e) {
+      setError(asCmdError(e).message);
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const commit = async (plan: LoadOrderNamePlanView, name: string | null) => {
+    setWorking(true);
+    setError(null);
+    try {
+      await onDone(await api.loadOrderCommitName(folder, name, plan.token));
+    } catch (e) {
+      setError(asCmdError(e).message);
+      setWorking(false);
+    }
+  };
+
+  const title = `Give ${folder} a name`;
+  const footer = (primary: ReactNode, back?: () => void) => (
+    <>
+      {gameRunning && (
+        <p className="callout warn" role="alert">
+          Endless Sky is running. Close it first; the manager doesn't change plugins while it runs.
+        </p>
+      )}
+      {error && (
+        <p className="callout error" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="modal-actions modal-actions-sticky">
+        {back && (
+          <button onClick={back} disabled={working}>
+            Back
+          </button>
+        )}
+        <button onClick={onClose} disabled={working}>
+          Cancel
+        </button>
+        {primary}
+      </div>
+    </>
+  );
+
+  if (review) {
+    const plan = review.plan;
+    const consequences = describeNameConsequences(plan);
+    return (
+      <div className="modal-backdrop">
+        <div ref={dialogRef} tabIndex={-1} className="modal wide" role="dialog" aria-modal="true" aria-label={title}>
+          <h2>{title}</h2>
+          <section>
+            <h3>This will add</h3>
+            <pre className="name-line">{plan.line}</pre>
+            <p className="muted">{describeNameWrite(plan)}</p>
+          </section>
+          <section>
+            <h3>What else changes</h3>
+            {consequences.length === 0 ? (
+              <p className="muted">That is its folder name, so nothing else changes.</p>
+            ) : (
+              <ul className="plain">
+                {consequences.map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+            )}
+          </section>
+          {plan.dependents.length > 0 && (
+            <section>
+              <h3>Other plugins that use the old name</h3>
+              <div className="callout warn">
+                The manager can't change other plugins' files, so these will no longer match this plugin:
+                <ul>
+                  {plan.dependents.map((d) => (
+                    <li key={`${d.plugin}|${d.relation}`}>{describeNameDependent(d)}</li>
+                  ))}
+                </ul>
+                Using the folder name instead avoids this.
+              </div>
+            </section>
+          )}
+          <p className="muted">
+            There's no button to undo this yet; the copy mentioned above is what to put back by hand. After every
+            update of this plugin the manager adds the line again, so it keeps its name.
+          </p>
+          {footer(
+            <button className="primary" disabled={working || gameRunning} onClick={() => void commit(plan, review.typed)}>
+              {working ? "Working…" : "Add the name"}
+            </button>,
+            () => {
+              setReview(null);
+              setError(null);
+            },
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  const typedEmpty = typed.trim() === "";
+  return (
+    <div className="modal-backdrop">
+      <div ref={dialogRef} tabIndex={-1} className="modal wide" role="dialog" aria-modal="true" aria-label={title}>
+        <h2>{title}</h2>
+        <p>
+          The game calls this plugin by its folder name, <span className="folder">{folder}</span>, because its plugin.txt
+          (the plugin&apos;s info file) has no name. To number its folder without the game seeing a different plugin, the
+          manager will add one line to its plugin.txt. Nothing else in the file changes.
+        </p>
+        <fieldset className="name-choices">
+          <legend className="sr-only">Which name</legend>
+          <label className="name-choice">
+            <input
+              type="radio"
+              name="name-choice"
+              checked={choice === "folder"}
+              disabled={folderProblem !== null}
+              onChange={() => setChoice("folder")}
+            />
+            <span>
+              <strong>Use the folder name</strong> (recommended)
+              <br />
+              {folderProblem ? (
+                <span className="muted">Not possible: {folderProblem}</span>
+              ) : folderPlan ? (
+                <span className="muted">
+                  Adds <code>{folderPlan.line}</code>. The game, your on/off setting and your profiles keep calling it{" "}
+                  {folder}, so nothing else changes.
+                </span>
+              ) : (
+                <span className="muted">Checking…</span>
+              )}
+            </span>
+          </label>
+          <label className="name-choice">
+            <input type="radio" name="name-choice" checked={choice === "typed"} onChange={() => setChoice("typed")} />
+            <span>
+              <strong>Use a name I type</strong>
+              <br />
+              <span className="muted">
+                The game will then know the plugin by that name. You&apos;ll see everything that changes before anything is
+                written.
+              </span>
+            </span>
+          </label>
+          {choice === "typed" && (
+            <input
+              type="text"
+              className="name-input"
+              aria-label="New name"
+              value={typed}
+              autoFocus
+              onChange={(e) => {
+                setTyped(e.target.value);
+                setError(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !typedEmpty && !working) void reviewTyped();
+              }}
+            />
+          )}
+        </fieldset>
+        {choice === "folder" && folderPlan && <p className="muted">{describeNameWrite(folderPlan)}</p>}
+        <p className="muted">After every update of this plugin the manager adds the line again, so it keeps its name.</p>
+        {choice === "folder"
+          ? footer(
+              <button
+                className="primary"
+                disabled={working || gameRunning || !folderPlan}
+                onClick={() => folderPlan && void commit(folderPlan, null)}
+              >
+                {working ? "Working…" : "Add the name"}
+              </button>,
+            )
+          : footer(
+              <button className="primary" disabled={working || typedEmpty} onClick={() => void reviewTyped()}>
+                {working ? "Checking…" : "Review…"}
+              </button>,
+            )}
+      </div>
+    </div>
+  );
+}
+
 type Review = { plan: LoadOrderPlanView; wanted: string[] };
 type PreviewStatus = "pending" | "ready" | "failed";
 
@@ -259,6 +501,7 @@ export function LoadOrderView({ loadOrder, manager, notify }: { loadOrder: LoadO
   const [preview, setPreview] = useState<LoadOrderPreview | null>(null);
   const [previewStatus, setPreviewStatus] = useState<PreviewStatus>("ready");
   const [review, setReview] = useState<Review | null>(null);
+  const [naming, setNaming] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const trigger = useRef<HTMLElement | null>(null);
 
@@ -351,6 +594,22 @@ export function LoadOrderView({ loadOrder, manager, notify }: { loadOrder: LoadO
     await refresh();
     await manager.refreshState();
   }, [refresh, manager]);
+
+  const onNamed = useCallback(
+    async (done: LoadOrderNameCommitView) => {
+      setNaming(null);
+      notify("success", `Added the name "${done.name}" to its plugin.txt. It can now be ordered.`);
+      if (done.gameDetectionFailed) {
+        notify(
+          "warn",
+          "Couldn't check whether Endless Sky is running. If it is, it may undo the on/off change when it exits.",
+        );
+      }
+      await refresh();
+      await manager.refreshState();
+    },
+    [notify, refresh, manager],
+  );
 
   // Buttons at the end of the list stay focusable (aria-disabled, not disabled) so pressing one
   // doesn't throw the keyboard focus away.
@@ -507,12 +766,36 @@ export function LoadOrderView({ loadOrder, manager, notify }: { loadOrder: LoadO
                     {e.stillRenamed && <span className="badge neutral">Numbered</span>}
                   </div>
                   {e.folder !== e.identity && <div className="muted folder">{e.folder}</div>}
-                  <div className="muted deps">{describeExclusion(e.reasons, e.stillRenamed)}</div>
+                  <div className="muted deps">{describeExclusion(e.reasons, e.stillRenamed, e.canName)}</div>
                 </div>
+                {e.canName && (
+                  <div className="row-actions">
+                    <button
+                      className="small"
+                      aria-label={`Give ${e.identity} a name`}
+                      onClick={(ev) => {
+                        trigger.current = ev.currentTarget;
+                        setNaming(e.folder);
+                      }}
+                    >
+                      Give it a name…
+                    </button>
+                  </div>
+                )}
               </li>
             ))}
           </ul>
         </section>
+      )}
+
+      {naming && (
+        <NameDialog
+          folder={naming}
+          gameRunning={gameRunning}
+          returnTo={trigger}
+          onClose={() => setNaming(null)}
+          onDone={onNamed}
+        />
       )}
 
       {review && (

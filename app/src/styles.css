@@ -949,3 +949,51 @@ ul.plain li + li {
   padding: 12px 0 0;
   background: var(--panel);
 }
+
+/* --- Load order: "Give it a name" dialog (delete with the feature) ------------------ */
+
+.name-choices {
+  border: none;
+  margin: 14px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.name-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.name-choice input {
+  margin-top: 3px;
+}
+
+.name-input {
+  margin-left: 26px;
+  max-width: 420px;
+}
+
+.name-line {
+  font-family: var(--mono);
+  font-size: 13px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 6px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
