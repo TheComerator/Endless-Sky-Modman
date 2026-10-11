@@ -11,13 +11,15 @@ import { formatAge } from "./format";
 import { type Manager, useManager } from "./hooks/useManager";
 import { type PlanFlow, usePlanFlow } from "./hooks/usePlanFlow";
 import { type Updater, useUpdater } from "./hooks/useUpdater";
+import { useLoadOrder } from "./hooks/useLoadOrder"; // load order
 import { type Notify, useToasts } from "./hooks/useToasts";
 import { BrowseView } from "./views/BrowseView";
 import { InstalledView } from "./views/InstalledView";
+import { LoadOrderView } from "./views/LoadOrderView"; // load order
 import { ProfilesView } from "./views/ProfilesView";
 import { KIND_LABEL, SettingsView } from "./views/SettingsView";
 
-type Tab = "installed" | "browse" | "profiles" | "settings";
+type Tab = "installed" | "browse" | "profiles" | "loadOrder" | "settings";
 
 function TopBar({ manager, planFlow, notify }: { manager: Manager; planFlow: PlanFlow; notify: Notify }) {
   const { state, game } = manager;
@@ -238,6 +240,7 @@ export default function App() {
   }, [manager.refreshState]);
   const planFlow = usePlanFlow(notify, onCommitted);
   const updater = useUpdater(notify);
+  const loadOrder = useLoadOrder(notify); // load order
   const [tab, setTab] = useState<Tab>("installed");
   const { state } = manager;
 
@@ -267,8 +270,15 @@ export default function App() {
     ["installed", "Installed", state?.plugins.length ? String(state.plugins.length) : null],
     ["browse", "Browse Plugins", null],
     ["profiles", "Profiles", null],
+    // load order: the page exists only while the Settings switch is on
+    ...(loadOrder.enabled ? [["loadOrder", "Load order", null] as [Tab, string, string | null]] : []),
     ["settings", "Settings", null],
   ];
+
+  // load order: switching the feature off while its page is open leaves for Settings.
+  useEffect(() => {
+    if (tab === "loadOrder" && loadOrder.state && !loadOrder.enabled) setTab("settings");
+  }, [tab, loadOrder.state, loadOrder.enabled]);
 
   return (
     <div className="app">
@@ -301,7 +311,12 @@ export default function App() {
           {tab === "installed" && <InstalledView manager={manager} planFlow={planFlow} notify={notify} />}
           {tab === "browse" && <BrowseView manager={manager} planFlow={planFlow} />}
           {tab === "profiles" && <ProfilesView manager={manager} planFlow={planFlow} notify={notify} />}
-          {tab === "settings" && <SettingsView manager={manager} notify={notify} updater={updater} />}
+          {tab === "loadOrder" && loadOrder.enabled && (
+            <LoadOrderView loadOrder={loadOrder} manager={manager} notify={notify} />
+          )}
+          {tab === "settings" && (
+            <SettingsView manager={manager} notify={notify} updater={updater} loadOrder={loadOrder} />
+          )}
         </main>
       </div>
       <PlanDialog planFlow={planFlow} />
