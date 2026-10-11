@@ -80,11 +80,14 @@ export function describeGroup(group: WinnerGroup): string {
 }
 
 export function describeExclusion(reasons: readonly LoadOrderExcludeReason[], stillRenamed: boolean): string {
-  const parts: string[] = reasons.map((r) =>
-    r === "noPluginName"
-      ? "Its plugin.txt (the plugin's info file) has no name, so renaming its folder would make the game see a different plugin."
-      : "It was put here by hand, and the manager only renames plugins it installed itself. \"Reinstall latest\" on the Installed page lets the manager take it over.",
-  );
+  const text: Record<LoadOrderExcludeReason, string> = {
+    noPluginName:
+      "Its plugin.txt (the plugin's info file) has no name, so renaming its folder would make the game see a different plugin.",
+    notLinkedToCatalog:
+      "The manager doesn't know this plugin: it was added by hand and isn't linked to a catalog plugin, so it couldn't put the original folder name back. (A hand-added plugin that matches a catalog plugin is linked automatically.)",
+    unsupportedFolderName: "Its folder name has characters, or a length, that the manager won't rename.",
+  };
+  const parts: string[] = reasons.map((r) => text[r]);
   if (stillRenamed) parts.push("Its folder still has a number from earlier; use Restore original names.");
   return parts.join(" ");
 }

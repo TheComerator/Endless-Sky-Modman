@@ -106,9 +106,9 @@ describe("describeGroup", () => {
 describe("describeExclusion", () => {
   it("explains each reason, and a leftover prefix", () => {
     expect(describeExclusion(["noPluginName"], false)).toContain("no name");
-    expect(describeExclusion(["notInstalledByManager"], false)).toContain("by hand");
-    expect(describeExclusion(["notInstalledByManager"], false)).toContain("Reinstall latest");
-    expect(describeExclusion(["noPluginName", "notInstalledByManager"], false)).toContain("by hand");
+    expect(describeExclusion(["notLinkedToCatalog"], false)).toContain("isn't linked to a catalog plugin");
+    expect(describeExclusion(["unsupportedFolderName"], false)).toContain("folder name");
+    expect(describeExclusion(["noPluginName", "notLinkedToCatalog"], false)).toContain("added by hand");
     expect(describeExclusion(["noPluginName"], true)).toContain("Restore original names");
   });
 });

@@ -3,6 +3,8 @@
 //! Same conventions as `views.rs`: plain serializable data, camelCase on the wire, exported to
 //! `app/src/bindings/` by ts-rs when `cargo test` runs. Deleting the feature deletes this file.
 
+use std::collections::HashSet;
+
 use esmm_core::load_order::{ChangeKind, ChangePlan, ExcludeReason, Violation, WinnerChange};
 use esmm_core::overlap::OverlapItem;
 use serde::Serialize;
@@ -14,15 +16,18 @@ use ts_rs::TS;
 pub enum LoadOrderExcludeReason {
     /// Its `plugin.txt` has no `name`, so renaming its folder would change its identity.
     NoPluginName,
-    /// It was put in `plugins/` by hand; the manager only renames what it installed.
-    NotInstalledByManager,
+    /// The manager has no record of it (put in by hand and not linked to the catalog).
+    NotLinkedToCatalog,
+    /// Its folder name isn't one the manager renames (odd characters, or too long).
+    UnsupportedFolderName,
 }
 
 impl From<ExcludeReason> for LoadOrderExcludeReason {
     fn from(r: ExcludeReason) -> Self {
         match r {
             ExcludeReason::NoPluginName => LoadOrderExcludeReason::NoPluginName,
-            ExcludeReason::NotInstalledByManager => LoadOrderExcludeReason::NotInstalledByManager,
+            ExcludeReason::NotLinkedToCatalog => LoadOrderExcludeReason::NotLinkedToCatalog,
+            ExcludeReason::UnsupportedFolderName => LoadOrderExcludeReason::UnsupportedFolderName,
         }
     }
 }
@@ -168,6 +173,9 @@ pub struct LoadOrderRename {
     pub from: String,
     pub to: String,
     pub identity: String,
+    /// The user put this plugin in `plugins/` by hand (the manager only linked it to the
+    /// catalog), so it is the folder they placed that is being renamed.
+    pub by_hand: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
@@ -214,7 +222,13 @@ pub struct LoadOrderPlanView {
 }
 
 impl LoadOrderPlanView {
-    pub fn new(plan: &ChangePlan, token: String, changes: &[WinnerChange]) -> Self {
+    /// `by_hand`: folders (by current name) that the user placed themselves.
+    pub fn new(
+        plan: &ChangePlan,
+        token: String,
+        changes: &[WinnerChange],
+        by_hand: &HashSet<String>,
+    ) -> Self {
         LoadOrderPlanView {
             kind: plan.kind.into(),
             token,
@@ -225,6 +239,7 @@ impl LoadOrderPlanView {
                     from: r.from.clone(),
                     to: r.to.clone(),
                     identity: r.identity.clone(),
+                    by_hand: by_hand.contains(&r.from),
                 })
                 .collect(),
             loads_among: plan.loads_among.clone(),
