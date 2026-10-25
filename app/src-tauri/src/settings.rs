@@ -52,6 +52,10 @@ pub struct Settings {
     pub selected: Option<String>,
     #[serde(default)]
     pub custom: Vec<CustomInstall>,
+    /// load order: the optional "Manage plugin load order" switch; off unless the user turns
+    /// it on (settings files from before the feature load as off).
+    #[serde(default)]
+    pub manage_load_order: bool,
 }
 
 impl Settings {
@@ -159,12 +163,35 @@ mod tests {
                 config_dir: Some("/x".into()),
                 executable: None,
             }],
+            manage_load_order: true,
         };
         settings.save(dir.path()).unwrap();
         assert_eq!(Settings::load(dir.path()), settings);
 
         std::fs::write(dir.path().join(SETTINGS_FILE), "{not json").unwrap();
         assert_eq!(Settings::load(dir.path()), Settings::default());
+    }
+
+    #[test]
+    fn load_order_management_is_off_unless_the_settings_file_says_otherwise() {
+        // load order: settings written before the feature existed have no such field.
+        assert!(!Settings::default().manage_load_order);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(SETTINGS_FILE),
+            r#"{"selected": "steam|/x|", "custom": []}"#,
+        )
+        .unwrap();
+        let loaded = Settings::load(dir.path());
+        assert_eq!(loaded.selected.as_deref(), Some("steam|/x|"));
+        assert!(!loaded.manage_load_order);
+
+        let on = Settings {
+            manage_load_order: true,
+            ..Settings::default()
+        };
+        on.save(dir.path()).unwrap();
+        assert!(Settings::load(dir.path()).manage_load_order);
     }
 
     #[test]

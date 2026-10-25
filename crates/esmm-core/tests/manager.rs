@@ -13,7 +13,7 @@ use esmm_core::game_state::{self, GameProcess};
 use esmm_core::install;
 use esmm_core::manager::{self, CommitContext, CommitError, Fetcher, InstalledPlugin, PlanContext};
 use esmm_core::plugin_state::PluginStates;
-use esmm_core::records::{self, InstallRecords};
+use esmm_core::records::{self, InstallRecord, InstallRecords};
 use esmm_core::resolve::Issue;
 use zip::write::SimpleFileOptions;
 
@@ -874,6 +874,155 @@ fn update_keeps_enabled_state_and_folder_name() {
         "stays disabled across the update"
     );
     assert_eq!(world.records()["A-Cat"].version, "2.0");
+}
+
+#[test]
+fn update_replaces_the_folder_the_plugin_is_in_whatever_it_is_called() {
+    // A plugin dropped in by hand under its own folder name and then linked to the catalog:
+    // its update must land in that folder, not in a second one named after the catalog entry.
+    let mut world = World::new();
+    world.add_plugin("A-Cat", Some("A"), &[], &[], &[], None);
+    let dir = world.plugins_dir().join("Hand-Placed");
+    fs::create_dir_all(dir.join("data")).unwrap();
+    fs::write(dir.join("plugin.txt"), "name \"A\"\n").unwrap();
+    let mut records = InstallRecords::new();
+    records.insert(
+        "Hand-Placed".to_string(),
+        InstallRecord {
+            catalog_name: "A-Cat".into(),
+            folder: "Hand-Placed".into(),
+            identity: "A".into(),
+            version: String::new(),
+            source_url: "https://example.com/A-Cat.zip".into(),
+            sha256: String::new(),
+            original_folder: None,
+        },
+    );
+    records::save(&world.records_path, &records).unwrap();
+
+    let snap = Snapshot::take(&world);
+    let plan = manager::plan_update("Hand-Placed", &snap.ctx(&world, None)).unwrap();
+    manager::commit_update(plan, &world.commit_ctx(), false).unwrap();
+
+    assert_eq!(world.folder_names(), ["Hand-Placed"]);
+    let records = world.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records["Hand-Placed"].version, "1.0");
+    assert_eq!(records["Hand-Placed"].sha256, "test-sha");
+}
+
+/// Records a plugin dropped into plugins/ by hand and linked to the catalog (decision B).
+fn adopt(world: &World, folder: &str, identity: &str, catalog_name: &str) {
+    let mut records = world.records();
+    records.insert(
+        folder.to_string(),
+        InstallRecord {
+            catalog_name: catalog_name.into(),
+            folder: folder.into(),
+            identity: identity.into(),
+            version: String::new(),
+            source_url: format!("https://example.com/{catalog_name}.zip"),
+            sha256: String::new(),
+            original_folder: None,
+        },
+    );
+    records::save(&world.records_path, &records).unwrap();
+}
+
+#[test]
+fn updating_a_nameless_plugin_in_a_hand_named_folder_is_checked_under_that_folders_identity() {
+    // Foo has no `name` in its plugin.txt, so the game knows the hand-placed folder as
+    // "Foo-1.2" and another plugin requires it by exactly that. The update plan has to check
+    // the world under "Foo-1.2", not under the catalog's "Foo", or that requirement looks unmet.
+    let mut world = World::new();
+    world.add_plugin("Foo", None, &[], &[], &[], None);
+    let foo = world.plugins_dir().join("Foo-1.2");
+    fs::create_dir_all(foo.join("data")).unwrap();
+    adopt(&world, "Foo-1.2", "Foo-1.2", "Foo");
+    let dep = world.plugins_dir().join("Dep");
+    fs::create_dir_all(dep.join("data")).unwrap();
+    fs::write(
+        dep.join("plugin.txt"),
+        plugin_txt(Some("Dep"), &["Foo-1.2"], &[], &[], None),
+    )
+    .unwrap();
+
+    let snap = Snapshot::take(&world);
+    let plan = manager::plan_update("Foo-1.2", &snap.ctx(&world, None)).unwrap();
+    assert!(plan.issues.is_empty(), "{:?}", plan.issues);
+    manager::commit_update(plan, &world.commit_ctx(), false).unwrap();
+    assert_eq!(world.folder_names(), ["Dep", "Foo-1.2"]);
+    assert_eq!(world.records()["Foo-1.2"].identity, "Foo-1.2");
+}
+
+// Unix only: Windows can't have a folder whose name ends in a dot (it drops the dot).
+#[cfg(unix)]
+#[test]
+fn a_folder_name_the_installer_would_not_produce_keeps_the_old_update_behaviour() {
+    // "Odd." (a trailing dot) can't be installed into, so the update goes to the catalog's name.
+    let mut world = World::new();
+    world.add_plugin("A-Cat", Some("A"), &[], &[], &[], None);
+    let odd = world.plugins_dir().join("Odd.");
+    fs::create_dir_all(odd.join("data")).unwrap();
+    fs::write(odd.join("plugin.txt"), "name \"A\"\n").unwrap();
+    adopt(&world, "Odd.", "A", "A-Cat");
+
+    let snap = Snapshot::take(&world);
+    let plan = manager::plan_update("Odd.", &snap.ctx(&world, None)).unwrap();
+    manager::commit_update(plan, &world.commit_ctx(), false).unwrap();
+    assert_eq!(world.folder_names(), ["A-Cat", "Odd."]);
+}
+
+#[test]
+fn an_update_whose_folder_vanished_after_planning_is_refused_not_installed_elsewhere() {
+    let mut world = World::new();
+    let a = world.add_plugin("A-Cat", Some("A"), &[], &[], &[], None);
+    {
+        let snap = Snapshot::take(&world);
+        let plan = manager::plan_install(&a, &snap.ctx(&world, None));
+        manager::commit(plan, &world.commit_ctx(), false).unwrap();
+    }
+    let snap = Snapshot::take(&world);
+    let plan = manager::plan_update("A-Cat", &snap.ctx(&world, None)).unwrap();
+    // The folder is renamed (say by the load-order feature) before the plan is committed.
+    fs::rename(
+        world.plugins_dir().join("A-Cat"),
+        world.plugins_dir().join("010-A-Cat"),
+    )
+    .unwrap();
+    let err = manager::commit_update(plan, &world.commit_ctx(), false).unwrap_err();
+    assert!(matches!(err, CommitError::Io(m) if m.contains("plan the update again")));
+    assert_eq!(
+        world.folder_names(),
+        ["010-A-Cat"],
+        "no second copy appeared"
+    );
+}
+
+#[test]
+fn a_fresh_install_does_not_inherit_a_leftover_records_original_folder() {
+    let mut world = World::new();
+    let a = world.add_plugin("A-Cat", Some("A"), &[], &[], &[], None);
+    // A leftover record under the same key that belongs to a different catalog entry.
+    let mut records = InstallRecords::new();
+    records.insert(
+        "A-Cat".to_string(),
+        InstallRecord {
+            catalog_name: "Something-Else".into(),
+            folder: "A-Cat".into(),
+            identity: "Old".into(),
+            version: "1".into(),
+            source_url: "https://example.com/x.zip".into(),
+            sha256: "ab".into(),
+            original_folder: Some("Zzz".into()),
+        },
+    );
+    records::save(&world.records_path, &records).unwrap();
+
+    let snap = Snapshot::take(&world);
+    let plan = manager::plan_install(&a, &snap.ctx(&world, None));
+    manager::commit(plan, &world.commit_ctx(), false).unwrap();
+    assert_eq!(world.records()["A-Cat"].original_folder, None);
 }
 
 #[test]

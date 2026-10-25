@@ -365,6 +365,7 @@ mod tests {
             version: "1.0".into(),
             source_url: "https://example.com/a.zip".into(),
             sha256: "ab".repeat(32),
+            original_folder: None,
         }
     }
 

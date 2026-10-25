@@ -5,6 +5,7 @@ mod files;
 pub mod game_install;
 pub mod game_state;
 pub mod install;
+pub mod load_order;
 pub mod manager;
 pub mod overlap;
 pub mod plugin_meta;

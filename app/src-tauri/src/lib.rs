@@ -7,6 +7,7 @@
 mod commands;
 mod error;
 mod fetcher;
+mod load_order_views; // load order
 mod logging;
 mod settings;
 mod shell;
@@ -57,6 +58,15 @@ fn with_commands<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
         commands::import_profile,
         commands::update_active_profile,
         commands::delete_profile,
+        // load order
+        commands::load_order_state,
+        commands::load_order_set_enabled,
+        commands::load_order_suggest,
+        commands::load_order_preview,
+        commands::load_order_plan_apply,
+        commands::load_order_plan_restore,
+        commands::load_order_commit_apply,
+        commands::load_order_commit_restore,
     ])
 }
 
