@@ -322,3 +322,15 @@ EndlessSky/
 ---
 
 *Endless Sky Mod Manager, following Threshold 2.0 project standards.*
+
+---
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in GitHub Issues for TheComerator/Endless-Sky-Modman, using the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
