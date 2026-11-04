@@ -1445,7 +1445,8 @@ fn update_all_checks_every_new_version() {
         .iter()
         .map(|o| (o.winner.as_str(), o.loser.as_str()))
         .collect();
-    assert!(pairs.contains(&("Mmm Plugin", "Aaa Plugin")), "{pairs:?}");
+    // All three now define the Hornet, and the last to load (Zzz) wins over both of the others.
+    assert!(pairs.contains(&("Zzz Plugin", "Aaa Plugin")), "{pairs:?}");
     assert!(pairs.contains(&("Zzz Plugin", "Mmm Plugin")), "{pairs:?}");
 }
 
