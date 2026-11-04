@@ -88,14 +88,13 @@ The manager is careful because it edits files your game reads:
 
 ## Where things live
 
-| What | Where (Windows) |
-|---|---|
-| Your plugins | `%APPDATA%\endless-sky\plugins\` (the game's own folder) |
-| The game's plugin on/off list | `%APPDATA%\endless-sky\plugins.txt` |
-| The manager's records and profiles | `%APPDATA%\io.github.thecomerator.esmm\` |
-| Catalog cache and log files | `%LOCALAPPDATA%\io.github.thecomerator.esmm\` (logs in `logs\`, kept 14 days) |
+| What | Windows | macOS | Linux |
+|---|---|---|---|
+| Your plugins | `%APPDATA%\endless-sky\plugins\` | `~/Library/Application Support/endless-sky/plugins/` | `~/.local/share/endless-sky/plugins/` |
+| The game's plugin on/off list | `%APPDATA%\endless-sky\plugins.txt` | `~/Library/Application Support/endless-sky/plugins.txt` | `~/.local/share/endless-sky/plugins.txt` |
+| **Log files** (one per day, kept 14 days) | `%LOCALAPPDATA%\io.github.thecomerator.esmm\logs\` | `~/Library/Logs/io.github.thecomerator.esmm/` | `~/.local/share/io.github.thecomerator.esmm/logs/` |
 
-On Linux and macOS the same pieces live in the platform's standard data, cache and log folders under the same app name.
+The game's own folder can differ for Flatpak or custom installs; the manager shows the one it uses under **Settings**. The manager's own records and profiles are kept in its app-data folder, `%APPDATA%\io.github.thecomerator.esmm\` on Windows and the equivalent standard folders on macOS and Linux.
 
 ## Reporting a problem
 
