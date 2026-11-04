@@ -2,6 +2,7 @@
 // be unit-tested (format.test.ts): this text is how users understand what a plan will do.
 import type { IssueView } from "./bindings/IssueView";
 import type { NoteView } from "./bindings/NoteView";
+import type { OverlapPairView } from "./bindings/OverlapPairView";
 import type { PlanKind } from "./bindings/PlanKind";
 import type { PlanView } from "./bindings/PlanView";
 import type { StepView } from "./bindings/StepView";
@@ -70,6 +71,32 @@ export function describeIssue(issue: IssueView): Described {
 export function describeNote(note: NoteView): string {
   const state = note.installed ? "installed" : "not installed";
   return `${note.plugin} can optionally use ${note.optional} (${state}).`;
+}
+
+function count(n: number, singular: string, plural: string): string {
+  return `${n} ${n === 1 ? singular : plural}`;
+}
+
+/**
+ * One plugin overriding another. "Loads after" is the game's rule: it reads plugin folders in
+ * alphabetical order, and where two plugins set the same thing, the one read last wins.
+ */
+export function describeOverlap(o: OverlapPairView): Described {
+  const parts: string[] = [];
+  if (o.objects) parts.push(count(o.objects, "game object", "game objects"));
+  if (o.images) parts.push(count(o.images, "image", "images"));
+  if (o.sounds) parts.push(count(o.sounds, "sound", "sounds"));
+  const total = o.objects + o.images + o.sounds;
+  const shown = o.examples.length;
+  const more = total > shown ? `, and ${total - shown} more` : "";
+  const examples = shown ? ` For example: ${o.examples.join(", ")}${more}.` : "";
+  const harmless = o.maybeHarmless
+    ? " These are list-style settings, which usually combine rather than clash."
+    : "";
+  return {
+    title: `${o.winner} overrides ${o.loser}`,
+    detail: `${o.winner} loads after ${o.loser} and changes the same ${list(parts)}, so ${o.winner}'s version is the one the game uses.${examples}${harmless}`,
+  };
 }
 
 export function describeStep(step: StepView): string {

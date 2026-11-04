@@ -2,6 +2,7 @@
 import type { IssueView } from "./IssueView";
 import type { MissingView } from "./MissingView";
 import type { NoteView } from "./NoteView";
+import type { OverlapPairView } from "./OverlapPairView";
 import type { PlanKind } from "./PlanKind";
 import type { RequirementFixView } from "./RequirementFixView";
 import type { StepView } from "./StepView";
@@ -37,4 +38,9 @@ gameVersion: string | null,
 /**
  * Uninstall plans for a plugin the manager didn't install (decision B).
  */
-unmanagedTarget: boolean, };
+unmanagedTarget: boolean,
+/**
+ * Plugins this change would make override each other, grouped by pair. Never blocking;
+ * empty when the check is switched off in Settings.
+ */
+overlaps: Array<OverlapPairView>, };

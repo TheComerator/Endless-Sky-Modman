@@ -555,6 +555,25 @@ pub struct RequirementFixView {
     pub candidates: Vec<String>,
 }
 
+/// A heads-up that one plugin would override another: everything `winner` changes that
+/// `loser` also changes. Never blocking (many overlaps are intentional).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct OverlapPairView {
+    /// Loads later, so the game uses its values.
+    pub winner: String,
+    /// Loads earlier; where both set the same thing, its values are lost.
+    pub loser: String,
+    pub objects: u32,
+    pub images: u32,
+    pub sounds: u32,
+    /// A few of the items, as the game's data files write them (`ship "Hornet"`).
+    pub examples: Vec<String>,
+    /// Only list-style fields (a system's `link`, ...) are shared, which is usually harmless.
+    pub maybe_harmless: bool,
+}
+
 /// A pending plan, held by the backend until it's committed, discarded or superseded.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -578,6 +597,9 @@ pub struct PlanView {
     pub game_version: Option<String>,
     /// Uninstall plans for a plugin the manager didn't install (decision B).
     pub unmanaged_target: bool,
+    /// Plugins this change would make override each other, grouped by pair. Never blocking;
+    /// empty when the check is switched off in Settings.
+    pub overlaps: Vec<OverlapPairView>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, TS)]
