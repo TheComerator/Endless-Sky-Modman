@@ -40,5 +40,5 @@ body:
     attributes:
       label: Relevant log lines
       description: |
-        The log is the most useful thing you can add. On Windows it is in `%LOCALAPPDATA%\io.github.thecomerator.esmm\logs\`. Paste the last lines from around when it went wrong. It contains your plugin names and folder paths but nothing sensitive.
+        The log is the most useful thing you can add. One file per day, named `esmm.log.<date>`. Windows: `%LOCALAPPDATA%\io.github.thecomerator.esmm\logs\`. macOS: `~/Library/Logs/io.github.thecomerator.esmm/`. Linux: `~/.local/share/io.github.thecomerator.esmm/logs/`. Paste the last lines from around when it went wrong. It contains your plugin names and folder paths (which may include your username) but nothing sensitive; glance over it before posting.
       render: text

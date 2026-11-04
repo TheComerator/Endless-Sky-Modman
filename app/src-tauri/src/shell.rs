@@ -307,6 +307,9 @@ pub struct Shell {
     next_id: AtomicU32,
     /// Serializes everything that writes the manager's or the game's files.
     op_lock: Mutex<()>,
+    /// The last game-process status seen, so the log records when it changes instead of every
+    /// 4-second poll.
+    last_game_process: Mutex<Option<GameProcess>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -330,6 +333,7 @@ impl Shell {
             deps,
             catalog: RwLock::new(None),
             versions: Mutex::new(HashMap::new()),
+            last_game_process: Mutex::new(None),
             pending: Mutex::new(None),
             planning: Mutex::new(None),
             next_id: AtomicU32::new(1),
@@ -568,7 +572,13 @@ impl Shell {
     }
 
     pub fn game_status(&self) -> GameProcessView {
-        (self.deps.detect_game)().into()
+        let status = (self.deps.detect_game)();
+        let mut last = lock(&self.last_game_process);
+        if *last != Some(status) {
+            tracing::info!(?status, "game process status");
+            *last = Some(status);
+        }
+        status.into()
     }
 
     pub fn launch_game(&self) -> CmdResult<()> {

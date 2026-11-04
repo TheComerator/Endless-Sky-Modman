@@ -34,6 +34,10 @@ impl AppState {
     }
 }
 
+/// Commands the frontend calls on a timer. Logging each call would bury everything else in the
+/// log (one line every few seconds), so they are logged at debug level, which is off by default.
+const POLLED_COMMANDS: &[&str] = &["game_status"];
+
 /// Runs `f` off the async runtime and logs the command's entry/exit at the IPC boundary -
 /// what the frontend asked for and what it got back, independent of whatever `f` itself logs.
 async fn blocking<T, F>(state: &AppState, name: &'static str, f: F) -> CmdResult<T>
@@ -41,7 +45,11 @@ where
     T: Send + 'static,
     F: FnOnce(&Shell) -> CmdResult<T> + Send + 'static,
 {
-    tracing::info!(command = name, "command invoked");
+    if POLLED_COMMANDS.contains(&name) {
+        tracing::debug!(command = name, "command invoked");
+    } else {
+        tracing::info!(command = name, "command invoked");
+    }
     let shell = state.shell.clone();
     let result = tauri::async_runtime::spawn_blocking(move || f(&shell))
         .await
