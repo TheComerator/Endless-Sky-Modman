@@ -38,7 +38,7 @@ gameVersion: string | null,
 /**
  * Uninstall plans for a plugin the manager didn't install (decision B).
  */
-unmanagedTarget: boolean,
+unmanagedTarget: boolean, 
 /**
  * Plugins this change would make override each other, grouped by pair. Never blocking;
  * empty when the check is switched off in Settings.

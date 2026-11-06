@@ -4,19 +4,19 @@
  * A heads-up that one plugin would override another: everything `winner` changes that
  * `loser` also changes. Never blocking (many overlaps are intentional).
  */
-export type OverlapPairView = {
+export type OverlapPairView = { 
 /**
  * Loads later, so the game uses its values.
  */
-winner: string,
+winner: string, 
 /**
  * Loads earlier; where both set the same thing, its values are lost.
  */
-loser: string, objects: number, images: number, sounds: number,
+loser: string, objects: number, images: number, sounds: number, 
 /**
  * A few of the items, as the game's data files write them (`ship "Hornet"`).
  */
-examples: Array<string>,
+examples: Array<string>, 
 /**
  * Only list-style fields (a system's `link`, ...) are shared, which is usually harmless.
  */
