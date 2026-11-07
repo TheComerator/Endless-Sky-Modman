@@ -48,6 +48,9 @@ export const api = {
   importProfile: (path: string) => invoke<string>("import_profile", { path }),
   updateActiveProfile: () => invoke<void>("update_active_profile"),
   deleteProfile: (name: string) => invoke<void>("delete_profile", { name }),
+
+  getOverlapScan: () => invoke<boolean>("get_overlap_scan"),
+  setOverlapScan: (enabled: boolean) => invoke<void>("set_overlap_scan", { enabled }),
 };
 
 /** Every command rejects with a `CmdError`; Tauri's own argument errors arrive as strings. */

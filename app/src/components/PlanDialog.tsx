@@ -10,6 +10,7 @@ import {
   commitLabel,
   describeIssue,
   describeNote,
+  describeOverlap,
   describeStep,
   formatBytes,
   planTitle,
@@ -198,6 +199,26 @@ export function PlanDialog({ planFlow }: { planFlow: PlanFlow }) {
               {plan.notes.map((note, i) => (
                 <li key={i}>{describeNote(note)}</li>
               ))}
+            </ul>
+          </section>
+        )}
+
+        {plan.overlaps.length > 0 && (
+          <section className="overlaps">
+            <h3>Heads-up: plugins that change the same things</h3>
+            <p className="muted">
+              This doesn't stop you. Many overlaps are intended (a patch plugin, for example). The game
+              loads plugins in alphabetical order of their folder names, and the one loaded last wins.
+            </p>
+            <ul>
+              {plan.overlaps.map((o) => {
+                const { title, detail } = describeOverlap(o);
+                return (
+                  <li key={`${o.winner}\u0000${o.loser}`} className="overlap">
+                    <strong>{title}.</strong> {detail}
+                  </li>
+                );
+              })}
             </ul>
           </section>
         )}

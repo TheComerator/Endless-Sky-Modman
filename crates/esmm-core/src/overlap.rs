@@ -440,6 +440,126 @@ pub fn find_overlaps(plugins: &[PluginEntry]) -> Vec<Overlap> {
     found
 }
 
+// ---------------------------------------------------------------------------
+// Warnings: what a change newly causes, grouped by plugin pair
+// ---------------------------------------------------------------------------
+
+/// Fields the game treats as lists that grow when another plugin sets them again, so sharing
+/// only these is usually harmless (a system's `link`, its `asteroids`, ...). A simplification:
+/// it is a "may be harmless" hint, never a reason to hide a warning.
+const LIST_FIELDS: &[&str] = &["link", "asteroids", "minables", "fleet", "description"];
+
+/// How many example items one pair lists.
+const MAX_EXAMPLES: usize = 5;
+
+/// Everything one plugin overrides from one other plugin.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PairOverlap {
+    /// Loads later, so its values are the ones the game uses.
+    pub winner: String,
+    /// Loads earlier; the values it set that `winner` also sets are lost.
+    pub loser: String,
+    pub objects: usize,
+    pub images: usize,
+    pub sounds: usize,
+    /// A few items, written the way the game's data files write them (`ship "Hornet"`).
+    pub examples: Vec<String>,
+    /// Object fields set by overlapping definitions (sorted, deduplicated). Gathered per item,
+    /// so for an item three plugins touch it can include a field from another pair's overlap.
+    pub fields: Vec<String>,
+    /// Every shared object field is a list-style one and nothing else is shared.
+    pub maybe_harmless: bool,
+}
+
+fn describe(item: &OverlapItem) -> String {
+    match item {
+        OverlapItem::Object { kind, name } => format!("{kind} \"{name}\""),
+        OverlapItem::Image(name) => format!("image {name}"),
+        OverlapItem::Sound(name) => format!("sound {name}"),
+    }
+}
+
+/// The overlaps in `after` that are not already in `before`, grouped by (winner, loser) pair.
+///
+/// `before` is the situation without the change (say, the enabled plugins as they are now) and
+/// `after` the situation with it, so only what the change *causes* is reported: overlaps that
+/// already existed are not repeated every time something is switched. Two overlaps are the same
+/// when the item, the winner and the loser all match.
+pub fn new_overlaps(before: &[Overlap], after: &[Overlap]) -> Vec<PairOverlap> {
+    let known: BTreeSet<(&OverlapItem, &str, &str)> = before
+        .iter()
+        .flat_map(|o| {
+            o.overridden
+                .iter()
+                .map(move |l| (&o.item, o.winner.as_str(), l.as_str()))
+        })
+        .collect();
+
+    // (winner, loser) -> accumulated pair
+    let mut pairs: BTreeMap<(String, String), PairOverlap> = BTreeMap::new();
+    let mut every_object_harmless: BTreeMap<(String, String), bool> = BTreeMap::new();
+    for overlap in after {
+        for loser in &overlap.overridden {
+            if known.contains(&(&overlap.item, overlap.winner.as_str(), loser.as_str())) {
+                continue;
+            }
+            let key = (overlap.winner.clone(), loser.clone());
+            let pair = pairs.entry(key.clone()).or_insert_with(|| PairOverlap {
+                winner: overlap.winner.clone(),
+                loser: loser.clone(),
+                objects: 0,
+                images: 0,
+                sounds: 0,
+                examples: Vec::new(),
+                fields: Vec::new(),
+                maybe_harmless: false,
+            });
+            match overlap.item {
+                OverlapItem::Object { .. } => {
+                    pair.objects += 1;
+                    let harmless = !overlap.fields.is_empty()
+                        && overlap
+                            .fields
+                            .iter()
+                            .all(|f| LIST_FIELDS.contains(&f.as_str()));
+                    let entry = every_object_harmless.entry(key).or_insert(true);
+                    *entry &= harmless;
+                }
+                OverlapItem::Image(_) => pair.images += 1,
+                OverlapItem::Sound(_) => pair.sounds += 1,
+            }
+            if pair.examples.len() < MAX_EXAMPLES {
+                pair.examples.push(describe(&overlap.item));
+            }
+            for f in &overlap.fields {
+                if !pair.fields.contains(f) {
+                    pair.fields.push(f.clone());
+                }
+            }
+        }
+    }
+
+    let mut out: Vec<PairOverlap> = pairs
+        .into_iter()
+        .map(|(key, mut pair)| {
+            pair.fields.sort();
+            pair.maybe_harmless = pair.images == 0
+                && pair.sounds == 0
+                && every_object_harmless.get(&key).copied().unwrap_or(false);
+            pair
+        })
+        .collect();
+    // Most overridden things first, then by name, so the list order is stable.
+    out.sort_by(|a, b| {
+        let total = |p: &PairOverlap| p.objects + p.images + p.sounds;
+        total(b)
+            .cmp(&total(a))
+            .then_with(|| a.winner.cmp(&b.winner))
+            .then_with(|| a.loser.cmp(&b.loser))
+    });
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -725,5 +845,80 @@ start
         assert_eq!(overlaps[0].item, OverlapItem::Image("land/aera@2x".into()));
         assert_eq!(overlaps[0].winner, "landing.images.highres");
         assert_eq!(overlaps[0].overridden, ["High DPI"]);
+    }
+
+    #[test]
+    fn only_overlaps_a_change_causes_are_reported_and_grouped_by_pair() {
+        let a = index(
+            &[
+                def("ship", "Hornet", Mode::Sets, &["sprite", "attributes"]),
+                def("ship", "Falcon", Mode::Sets, &["sprite"]),
+            ],
+            &["x/one"],
+        );
+        let b = index(
+            &[
+                def("ship", "Hornet", Mode::Sets, &["sprite"]),
+                def("ship", "Falcon", Mode::Sets, &["sprite"]),
+            ],
+            &["x/one"],
+        );
+        let c = index(&[def("ship", "Hornet", Mode::Sets, &["attributes"])], &[]);
+
+        let before = find_overlaps(&entries(&[("a", &a), ("b", &b)]));
+        let after = find_overlaps(&entries(&[("a", &a), ("b", &b), ("c", &c)]));
+
+        // Without the change there is nothing new to report against itself.
+        assert!(new_overlaps(&before, &before).is_empty());
+
+        // Adding `c` creates one new overlap: c over a on Hornet's attributes. The existing
+        // b-over-a overlaps are not repeated.
+        let warnings = new_overlaps(&before, &after);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        let w = &warnings[0];
+        assert_eq!((w.winner.as_str(), w.loser.as_str()), ("c", "a"));
+        assert_eq!((w.objects, w.images, w.sounds), (1, 0, 0));
+        assert_eq!(w.examples, ["ship \"Hornet\""]);
+        assert!(w.fields.contains(&"attributes".to_string()));
+        assert!(!w.maybe_harmless);
+
+        // Everything is new when the "before" situation is empty, and pairs are grouped.
+        let everything = new_overlaps(&[], &before);
+        assert_eq!(everything.len(), 1);
+        assert_eq!(
+            (everything[0].winner.as_str(), everything[0].loser.as_str()),
+            ("b", "a")
+        );
+        assert_eq!((everything[0].objects, everything[0].images), (2, 1));
+    }
+
+    #[test]
+    fn sharing_only_list_style_fields_is_marked_maybe_harmless() {
+        let a = index(
+            &[def("system", "Sol", Mode::Sets, &["link", "asteroids"])],
+            &[],
+        );
+        let b = index(&[def("system", "Sol", Mode::Sets, &["link"])], &[]);
+        let sets_pos = index(&[def("system", "Sol", Mode::Sets, &["pos", "link"])], &[]);
+        let a_pos = index(&[def("system", "Sol", Mode::Sets, &["pos"])], &[]);
+
+        let lists = find_overlaps(&entries(&[("a", &a), ("b", &b)]));
+        assert!(new_overlaps(&[], &lists)[0].maybe_harmless);
+
+        let real = find_overlaps(&entries(&[("a", &a_pos), ("b", &sets_pos)]));
+        assert!(!new_overlaps(&[], &real)[0].maybe_harmless);
+    }
+
+    #[test]
+    fn examples_are_capped() {
+        let defs: Vec<Definition> = (0..9)
+            .map(|i| def("outfit", &format!("O{i}"), Mode::Sets, &["cost"]))
+            .collect();
+        let a = index(&defs, &[]);
+        let b = index(&defs, &[]);
+        let all = find_overlaps(&entries(&[("a", &a), ("b", &b)]));
+        let w = new_overlaps(&[], &all);
+        assert_eq!(w[0].objects, 9);
+        assert_eq!(w[0].examples.len(), 5);
     }
 }

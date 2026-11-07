@@ -5,6 +5,7 @@ import type { PlanView } from "./bindings/PlanView";
 import {
   commitLabel,
   describeIssue,
+  describeOverlap,
   describeStep,
   formatAge,
   formatBytes,
@@ -27,6 +28,7 @@ function plan(partial: Partial<PlanView>): PlanView {
     missing: [],
     gameVersion: null,
     unmanagedTarget: false,
+    overlaps: [],
     ...partial,
   };
 }
@@ -128,5 +130,41 @@ describe("small formatters", () => {
     expect(formatBytes(3 * 1024 * 1024)).toBe("3.0 MB");
     expect(formatAge(1000, 1000 * 1000 + 30 * 1000)).toBe("1 min ago");
     expect(formatAge(0, 3 * 86400 * 1000)).toBe("3 days ago");
+  });
+});
+
+describe("describeOverlap", () => {
+  const base = {
+    winner: "Zeta Pack",
+    loser: "Alpha Pack",
+    objects: 0,
+    images: 0,
+    sounds: 0,
+    examples: [] as string[],
+    maybeHarmless: false,
+  };
+
+  it("says who loads later and therefore wins", () => {
+    const { title, detail } = describeOverlap({ ...base, objects: 1, examples: ['ship "Hornet"'] });
+    expect(title).toBe("Zeta Pack overrides Alpha Pack");
+    expect(detail).toBe(
+      'Zeta Pack loads after Alpha Pack and changes the same 1 game object, so Zeta Pack\'s version is the one the game uses. For example: ship "Hornet".',
+    );
+  });
+
+  it("counts each kind and says how many examples are not shown", () => {
+    const { detail } = describeOverlap({
+      ...base,
+      objects: 7,
+      images: 2,
+      examples: ['ship "A"', 'ship "B"', 'ship "C"', 'ship "D"', 'ship "E"'],
+    });
+    expect(detail).toContain("the same 7 game objects and 2 images");
+    expect(detail).toContain(", and 4 more.");
+  });
+
+  it("adds a reassurance only when the overlap may be harmless", () => {
+    expect(describeOverlap({ ...base, objects: 1, maybeHarmless: true }).detail).toContain("usually combine");
+    expect(describeOverlap({ ...base, objects: 1 }).detail).not.toContain("usually combine");
   });
 });

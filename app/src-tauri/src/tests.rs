@@ -112,13 +112,13 @@ fn plugin_txt(name: &str, deps: &PluginDeps) -> String {
     out
 }
 
-fn make_zip(path: &Path, wrapper: &str, plugin_txt: &str) {
+fn make_zip(path: &Path, wrapper: &str, plugin_txt: &str, data: &str) {
     let mut zip = zip::ZipWriter::new(File::create(path).unwrap());
     let opts = SimpleFileOptions::default();
     zip.add_directory(format!("{wrapper}/data/"), opts).unwrap();
     zip.start_file(format!("{wrapper}/data/x.txt"), opts)
         .unwrap();
-    zip.write_all(b"ship stuff").unwrap();
+    zip.write_all(data.as_bytes()).unwrap();
     zip.start_file(format!("{wrapper}/plugin.txt"), opts)
         .unwrap();
     zip.write_all(plugin_txt.as_bytes()).unwrap();
@@ -207,6 +207,18 @@ impl World {
 
     /// Registers a catalog entry whose download is a zip wrapping `<catalog name>-src`.
     fn add(&self, catalog_name: &str, identity: &str, version: &str, deps: PluginDeps) {
+        self.add_with_data(catalog_name, identity, version, deps, "ship stuff");
+    }
+
+    /// Like [`World::add`], with the text of the plugin's one data file.
+    fn add_with_data(
+        &self,
+        catalog_name: &str,
+        identity: &str,
+        version: &str,
+        deps: PluginDeps,
+        data: &str,
+    ) {
         let e = entry(catalog_name, version);
         let zip = self
             .dir
@@ -216,6 +228,7 @@ impl World {
             &zip,
             &format!("{catalog_name}-src"),
             &plugin_txt(identity, &deps),
+            data,
         );
         self.fetcher
             .files
@@ -236,6 +249,15 @@ impl World {
         if let Some(name) = identity {
             fs::write(dir.join("plugin.txt"), format!("name \"{name}\"\n")).unwrap();
         }
+    }
+
+    /// Like [`World::drop_in`], with the text of the plugin's one data file.
+    fn drop_in_data(&self, folder: &str, identity: &str, data: &str) {
+        self.drop_in(folder, Some(identity));
+        let file = install::plugins_dir(&self.config)
+            .join(folder)
+            .join("data/x.txt");
+        fs::write(file, data).unwrap();
     }
 
     fn install(&self, catalog_name: &str) -> CommitView {
@@ -1275,6 +1297,217 @@ fn commit_errors_map_to_tagged_command_errors() {
     assert_eq!(json["kind"], "installFailed");
     assert_eq!(json["folder"], "Top");
     assert_eq!(json["partial"]["enabled"], serde_json::json!(["Dep"]));
+}
+
+// ---------------------------------------------------------------------------
+// Overlap warnings
+// ---------------------------------------------------------------------------
+
+const HORNET_A: &str = "ship \"Hornet\"\n\tsprite \"ship/a\"\n";
+const HORNET_B: &str = "ship \"Hornet\"\n\tsprite \"ship/b\"\n";
+const FALCON: &str = "ship \"Falcon\"\n\tsprite \"ship/f\"\n";
+
+/// Folder names are what set the load order, and the game's sort puts capitals first, so the
+/// fixtures use capitalised names throughout: "Aaa" loads before "Zzz".
+#[test]
+fn installing_a_plugin_that_overrides_an_enabled_one_warns_before_anything_is_written() {
+    let w = World::new();
+    w.drop_in_data("Aaa", "Aaa Plugin", HORNET_A);
+    w.add_with_data("Zzz", "Zzz Plugin", "1", PluginDeps::default(), HORNET_B);
+
+    let ticket = w.shell.begin_planning();
+    let plan = w.shell.plan_install(&ticket, "Zzz").unwrap();
+    assert!(
+        plan.issues.is_empty(),
+        "an overlap is never a blocking issue"
+    );
+    assert_eq!(
+        plan.overlaps,
+        [OverlapPairView {
+            winner: "Zzz Plugin".into(),
+            loser: "Aaa Plugin".into(),
+            objects: 1,
+            images: 0,
+            sounds: 0,
+            examples: vec!["ship \"Hornet\"".into()],
+            maybe_harmless: false,
+        }]
+    );
+    assert!(
+        !install::plugins_dir(&w.config).join("Zzz").exists(),
+        "the check reads the download from staging"
+    );
+    // It still commits with no override.
+    w.shell.commit_plan(plan.plan_id, false).unwrap();
+}
+
+#[test]
+fn a_plugin_with_nothing_in_common_gets_no_warning() {
+    let w = World::new();
+    w.drop_in_data("Aaa", "Aaa Plugin", HORNET_A);
+    w.add_with_data("Zzz", "Zzz Plugin", "1", PluginDeps::default(), FALCON);
+    let ticket = w.shell.begin_planning();
+    let plan = w.shell.plan_install(&ticket, "Zzz").unwrap();
+    assert!(plan.overlaps.is_empty());
+}
+
+#[test]
+fn disabled_plugins_dont_clash_until_they_are_enabled() {
+    let w = World::new();
+    w.drop_in_data("Aaa", "Aaa Plugin", HORNET_A);
+    w.set_enabled("Aaa Plugin", false);
+    w.add_with_data("Zzz", "Zzz Plugin", "1", PluginDeps::default(), HORNET_B);
+
+    let ticket = w.shell.begin_planning();
+    let plan = w.shell.plan_install(&ticket, "Zzz").unwrap();
+    assert!(plan.overlaps.is_empty(), "a disabled plugin isn't loaded");
+    w.shell.commit_plan(plan.plan_id, false).unwrap();
+
+    // Enabling the disabled one is what creates the clash, so that's where it is reported.
+    let ticket = w.shell.begin_planning();
+    let plan = w.shell.plan_enable(&ticket, "Aaa Plugin").unwrap();
+    assert_eq!(plan.overlaps.len(), 1);
+    assert_eq!(plan.overlaps[0].winner, "Zzz Plugin");
+    assert_eq!(plan.overlaps[0].loser, "Aaa Plugin");
+}
+
+#[test]
+fn enabling_does_not_repeat_overlaps_that_already_exist() {
+    let w = World::new();
+    w.drop_in_data("Aaa", "Aaa Plugin", HORNET_A);
+    w.drop_in_data("Mmm", "Mmm Plugin", HORNET_B);
+    w.drop_in_data("Zzz", "Zzz Plugin", FALCON);
+    w.set_enabled("Zzz Plugin", false);
+
+    // Aaa and Mmm already clash while both are enabled; enabling Zzz adds nothing new.
+    let ticket = w.shell.begin_planning();
+    let plan = w.shell.plan_enable(&ticket, "Zzz Plugin").unwrap();
+    assert!(plan.overlaps.is_empty(), "{:?}", plan.overlaps);
+}
+
+#[test]
+fn switching_profile_warns_about_clashes_it_creates() {
+    let w = World::new();
+    w.drop_in_data("Aaa", "Aaa Plugin", HORNET_A);
+    w.drop_in_data("Zzz", "Zzz Plugin", HORNET_B);
+    w.state(); // the first read snapshots "Default" with both enabled
+    w.shell.create_profile("Solo").unwrap();
+    w.set_enabled("Zzz Plugin", false); // saved into the active profile, "Solo"
+
+    let ticket = w.shell.begin_planning();
+    let plan = w.shell.plan_apply_profile(&ticket, "Default").unwrap();
+    assert_eq!(plan.overlaps.len(), 1);
+    assert_eq!(plan.overlaps[0].winner, "Zzz Plugin");
+
+    let ticket = w.shell.begin_planning();
+    let plan = w.shell.plan_apply_profile(&ticket, "Solo").unwrap();
+    assert!(plan.overlaps.is_empty(), "switching to Solo loads only one");
+}
+
+#[test]
+fn an_update_that_introduces_a_clash_is_reported() {
+    let w = World::new();
+    w.drop_in_data("Aaa", "Aaa Plugin", HORNET_A);
+    w.add_with_data("Zzz", "Zzz Plugin", "1", PluginDeps::default(), FALCON);
+    w.install("Zzz");
+    // Version 2 now also redefines Aaa's Hornet.
+    w.add_with_data(
+        "Zzz",
+        "Zzz Plugin",
+        "2",
+        PluginDeps::default(),
+        &format!("{FALCON}{HORNET_B}"),
+    );
+
+    let ticket = w.shell.begin_planning();
+    let plan = w.shell.plan_update(&ticket, "Zzz").unwrap();
+    assert_eq!(plan.overlaps.len(), 1, "{:?}", plan.overlaps);
+    assert_eq!(plan.overlaps[0].winner, "Zzz Plugin");
+    assert_eq!(plan.overlaps[0].loser, "Aaa Plugin");
+    assert_eq!(plan.overlaps[0].examples, ["ship \"Hornet\""]);
+}
+
+#[test]
+fn update_all_checks_every_new_version() {
+    let w = World::new();
+    w.drop_in_data("Aaa", "Aaa Plugin", HORNET_A);
+    w.add_with_data("Mmm", "Mmm Plugin", "1", PluginDeps::default(), FALCON);
+    w.add_with_data("Zzz", "Zzz Plugin", "1", PluginDeps::default(), FALCON);
+    w.install("Mmm");
+    w.install("Zzz");
+    w.add_with_data("Mmm", "Mmm Plugin", "2", PluginDeps::default(), HORNET_B);
+    w.add_with_data("Zzz", "Zzz Plugin", "2", PluginDeps::default(), HORNET_B);
+
+    let ticket = w.shell.begin_planning();
+    let plan = w.shell.plan_update_all(&ticket).unwrap();
+    let pairs: Vec<(&str, &str)> = plan
+        .overlaps
+        .iter()
+        .map(|o| (o.winner.as_str(), o.loser.as_str()))
+        .collect();
+    // All three now define the Hornet, and the last to load (Zzz) wins over both of the others.
+    assert!(pairs.contains(&("Zzz Plugin", "Aaa Plugin")), "{pairs:?}");
+    assert!(pairs.contains(&("Zzz Plugin", "Mmm Plugin")), "{pairs:?}");
+}
+
+#[test]
+fn the_overlap_check_can_be_switched_off_and_defaults_to_on() {
+    let w = World::new();
+    assert!(w.shell.overlap_scan(), "on by default");
+    w.drop_in_data("Aaa", "Aaa Plugin", HORNET_A);
+    w.add_with_data("Zzz", "Zzz Plugin", "1", PluginDeps::default(), HORNET_B);
+
+    w.shell.set_overlap_scan(false).unwrap();
+    assert!(!w.shell.overlap_scan());
+    let ticket = w.shell.begin_planning();
+    let plan = w.shell.plan_install(&ticket, "Zzz").unwrap();
+    assert!(plan.overlaps.is_empty());
+    assert!(
+        !w.paths().overlap_cache.exists(),
+        "nothing is read while it's off"
+    );
+
+    w.shell.set_overlap_scan(true).unwrap();
+    let ticket = w.shell.begin_planning();
+    let plan = w.shell.plan_install(&ticket, "Zzz").unwrap();
+    assert_eq!(plan.overlaps.len(), 1);
+    // The installed plugin's index was cached under the app-data folder, not in its folder.
+    assert!(w.paths().overlap_cache.join("Aaa.json").exists());
+    assert!(
+        !install::plugins_dir(&w.config)
+            .join("Aaa")
+            .join("overlap.json")
+            .exists()
+    );
+}
+
+#[test]
+fn switching_off_a_conflicting_plugin_to_resolve_it_updates_the_warnings() {
+    let w = World::new();
+    w.drop_in_data("Aaa", "Aaa Plugin", HORNET_A);
+    w.add_with_data(
+        "Zzz",
+        "Zzz Plugin",
+        "1",
+        PluginDeps {
+            conflicts: &["Aaa Plugin"],
+            ..Default::default()
+        },
+        HORNET_B,
+    );
+
+    let ticket = w.shell.begin_planning();
+    let plan = w.shell.plan_install(&ticket, "Zzz").unwrap();
+    assert_eq!(plan.overlaps.len(), 1);
+    let resolved = w
+        .shell
+        .resolve_conflict(plan.plan_id, "Aaa Plugin")
+        .unwrap();
+    assert!(
+        resolved.overlaps.is_empty(),
+        "Aaa Plugin will be off, so nothing is overridden: {:?}",
+        resolved.overlaps
+    );
 }
 
 #[test]

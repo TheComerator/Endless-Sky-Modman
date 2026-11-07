@@ -44,7 +44,7 @@ impl CustomInstall {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     /// An [`install_key`]; `None` means "the first detected install".
@@ -52,6 +52,24 @@ pub struct Settings {
     pub selected: Option<String>,
     #[serde(default)]
     pub custom: Vec<CustomInstall>,
+    /// Warn in the review dialog when a change would make plugins override each other
+    /// (`overlap.rs`). On by default; a settings file from an older version has no entry.
+    #[serde(default = "default_overlap_scan")]
+    pub overlap_scan: bool,
+}
+
+fn default_overlap_scan() -> bool {
+    true
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            selected: None,
+            custom: Vec::new(),
+            overlap_scan: true,
+        }
+    }
 }
 
 impl Settings {
@@ -95,6 +113,8 @@ pub struct InstallPaths {
     pub config_dir: PathBuf,
     pub records: PathBuf,
     pub profiles: PathBuf,
+    /// One small index file per plugin (`overlap.rs`), so unchanged plugins aren't read again.
+    pub overlap_cache: PathBuf,
 }
 
 impl InstallPaths {
@@ -106,6 +126,7 @@ impl InstallPaths {
             config_dir: config_dir.to_path_buf(),
             records: dir.join("records.json"),
             profiles: dir.join("profiles.json"),
+            overlap_cache: dir.join("overlap-cache"),
         }
     }
 
@@ -159,12 +180,27 @@ mod tests {
                 config_dir: Some("/x".into()),
                 executable: None,
             }],
+            overlap_scan: false,
         };
         settings.save(dir.path()).unwrap();
         assert_eq!(Settings::load(dir.path()), settings);
 
         std::fs::write(dir.path().join(SETTINGS_FILE), "{not json").unwrap();
         assert_eq!(Settings::load(dir.path()), Settings::default());
+    }
+
+    #[test]
+    fn overlap_scan_is_on_unless_the_file_says_otherwise() {
+        let dir = tempfile::tempdir().unwrap();
+        // A settings file written by an older version has no such entry.
+        std::fs::write(
+            dir.path().join(SETTINGS_FILE),
+            r#"{"selected":null,"custom":[]}"#,
+        )
+        .unwrap();
+        assert!(Settings::load(dir.path()).overlap_scan);
+        std::fs::write(dir.path().join(SETTINGS_FILE), r#"{"overlapScan":false}"#).unwrap();
+        assert!(!Settings::load(dir.path()).overlap_scan);
     }
 
     #[test]

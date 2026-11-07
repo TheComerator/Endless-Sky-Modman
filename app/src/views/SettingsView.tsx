@@ -1,5 +1,5 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { api, asCmdError } from "../api";
 import type { InstallKindView } from "../bindings/InstallKindView";
@@ -19,6 +19,22 @@ export function SettingsView({ manager, notify, updater }: { manager: Manager; n
   const [configDir, setConfigDir] = useState("");
   const [executable, setExecutable] = useState("");
   const [detecting, setDetecting] = useState(false);
+  // null until the saved choice has been read; the box is disabled meanwhile.
+  const [overlapScan, setOverlapScan] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    api.getOverlapScan().then(setOverlapScan, () => setOverlapScan(true));
+  }, []);
+
+  const changeOverlapScan = async (enabled: boolean) => {
+    setOverlapScan(enabled);
+    try {
+      await api.setOverlapScan(enabled);
+    } catch (e) {
+      setOverlapScan(!enabled);
+      notify("error", asCmdError(e).message);
+    }
+  };
 
   const run = async (action: () => Promise<Awaited<ReturnType<typeof api.listInstalls>>>) => {
     try {
@@ -48,6 +64,22 @@ export function SettingsView({ manager, notify, updater }: { manager: Manager; n
           <input type="checkbox" checked={updater.autoCheck} onChange={(e) => updater.setAutoCheck(e.target.checked)} />{" "}
           Check for a new version of the mod manager when it starts. This contacts GitHub; nothing else is sent, and
           nothing is ever installed without your click.
+        </label>
+      </section>
+      <section>
+        <div className="section-head">
+          <h2>Overlap warnings</h2>
+        </div>
+        <label className="muted">
+          <input
+            type="checkbox"
+            checked={overlapScan ?? true}
+            disabled={overlapScan === null}
+            onChange={(e) => void changeOverlapScan(e.target.checked)}
+          />{" "}
+          When you install, update or enable a plugin, or switch profile, warn if it would override another
+          enabled plugin (both change the same ship, outfit, image, and so on). This only reads your plugin
+          files on this computer, and it never blocks anything.
         </label>
       </section>
       <section>

@@ -40,6 +40,7 @@ Import someone's shared profile and the manager lists the plugins you're missing
 - **Updates**, one at a time or all at once. If a new version needs an extra plugin, that is installed too.
 - **Enable and disable** plugins without uninstalling them.
 - **Profiles**: save different sets of enabled plugins (a vanilla run, a heavy-mods run) and switch between them. If you toggle something in-game, the manager notices and offers to keep or restore your profile.
+- **Overlap warnings**: when you install, update or enable a plugin, or switch profile, the manager tells you if it would override another enabled plugin (for example both redefine the same ship), and which one wins. It is a heads-up only, never a block, and can be turned off in Settings.
 - **Conflict and dependency checks** before every change, in plain language. If two plugins conflict, it offers to disable one instead of just refusing.
 - **Finds your game** whether it's from Steam (including Steam as a Flatpak), a standalone install, an AppImage, or a custom folder, and launches it for you.
 
