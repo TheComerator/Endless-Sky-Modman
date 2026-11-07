@@ -836,6 +836,19 @@ ul.plain li + li {
   color: var(--muted);
 }
 
+.overlaps h3 {
+  color: var(--warn);
+}
+
+.overlaps ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.overlap + .overlap {
+  margin-top: 8px;
+}
+
 .override {
   display: flex;
   align-items: center;

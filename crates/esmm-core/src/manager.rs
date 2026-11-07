@@ -155,6 +155,14 @@ pub struct StagedPlugin {
     pub sha256: String,
 }
 
+impl StagedPlugin {
+    /// The downloaded plugin's folder, for reading it (say, to check for overlaps) before it
+    /// is committed. Valid until this value is dropped.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+}
+
 fn stage_download(ctx: &PlanContext, entry: &CatalogEntry) -> Result<StagedPlugin, String> {
     let staging =
         install::new_staging_dir(&install::tmp_dir(ctx.config_dir)).map_err(|e| e.to_string())?;
@@ -611,6 +619,11 @@ pub struct UpdatePlan {
 }
 
 impl UpdatePlan {
+    /// The downloaded new version of the plugin being updated.
+    pub fn staged(&self) -> &StagedPlugin {
+        &self.staged
+    }
+
     /// What the update installs or enables beyond the updated plugin itself, in dependency
     /// order, for a caller to show in a review before anything is committed.
     pub fn new_requirements(&self) -> &[PlanStep] {

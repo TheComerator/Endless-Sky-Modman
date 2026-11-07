@@ -36,6 +36,7 @@ use esmm_core::resolve::{self, CatalogMatch, Issue, Note, PlannedPlugin};
 
 use crate::error::{CmdError, CmdResult};
 use crate::fetcher::{PlanFetcher, ProgressSink};
+use crate::overlaps::{self, ScanInput};
 use crate::settings::{CustomInstall, InstallPaths, Settings, install_key};
 use crate::views::*;
 
@@ -144,6 +145,10 @@ struct Pending {
     /// doing the plan at all). `None` for a profile switch, which has no single such identity
     /// -- either side of a conflict there is a legitimate target.
     root_identity: Option<String>,
+    /// What the overlap check compared, kept so it can be redone cheaply when a conflict fix
+    /// changes which plugins end up enabled. `None` when the check is off or doesn't apply.
+    scan: Option<ScanInput>,
+    overlaps: Vec<OverlapPairView>,
 }
 
 impl Pending {
@@ -259,6 +264,7 @@ impl Pending {
             missing: self.missing.clone(),
             game_version: self.game_version.clone(),
             unmanaged_target: self.unmanaged_target,
+            overlaps: self.overlaps.clone(),
         }
     }
 }
@@ -793,6 +799,86 @@ impl Shell {
         Ok(())
     }
 
+    // -----------------------------------------------------------------------
+    // Overlap warnings (see overlaps.rs)
+    // -----------------------------------------------------------------------
+
+    /// Whether the overlap check is switched on (Settings; on unless the user turned it off).
+    pub fn overlap_scan(&self) -> bool {
+        Settings::load(&self.deps.data_dir).overlap_scan
+    }
+
+    pub fn set_overlap_scan(&self, enabled: bool) -> CmdResult<()> {
+        let mut settings = Settings::load(&self.deps.data_dir);
+        settings.overlap_scan = enabled;
+        settings.save(&self.deps.data_dir)?;
+        tracing::info!(enabled, "overlap check setting changed");
+        Ok(())
+    }
+
+    /// What a change loads: `after` is the enabled state once it is committed, `staged` the
+    /// downloaded plugins it installs or replaces.
+    fn scan_input(
+        &self,
+        snap: &Snapshot,
+        after: &PluginStates,
+        staged: Vec<overlaps::Candidate>,
+    ) -> ScanInput {
+        overlaps::input(
+            &snap.paths.overlap_cache,
+            &install::plugins_dir(&snap.paths.config_dir),
+            &snap.installed,
+            &snap.states,
+            after,
+            staged,
+        )
+    }
+
+    /// The scan input for one or more update plans: the new versions replace the installed
+    /// ones (when the plugin is enabled), and any requirement they add is installed/enabled too.
+    fn update_scan_input(&self, snap: &Snapshot, plans: &[UpdatePlan]) -> ScanInput {
+        let mut states = snap.states.clone();
+        let mut staged = Vec::new();
+        for plan in plans {
+            let (next, mut added) = overlaps::apply_steps(&states, plan.new_requirements());
+            states = next;
+            staged.append(&mut added);
+            let new_version = plan.staged();
+            let enabled = snap
+                .installed
+                .iter()
+                .find(|p| p.folder == plan.folder)
+                .is_some_and(|p| game_state::effective_enabled(&states, &p.identity));
+            if enabled {
+                staged.push(overlaps::Candidate {
+                    identity: new_version.identity.clone(),
+                    folder: plan.folder.clone(),
+                    dir: new_version.root().to_path_buf(),
+                    staged: true,
+                });
+            }
+        }
+        self.scan_input(snap, &states, staged)
+    }
+
+    /// Runs the overlap check for a freshly built plan (unless it's switched off) and keeps
+    /// the input so a conflict fix can redo it. Cancelling the plan cancels the scan too.
+    fn attach_overlaps(
+        &self,
+        ticket: &Ticket,
+        pending: &mut Pending,
+        scan: ScanInput,
+    ) -> CmdResult<()> {
+        if !self.overlap_scan() {
+            return Ok(());
+        }
+        pending.overlaps = scan
+            .run(&ticket.cancel)
+            .map_err(|_| CmdError::cancelled())?;
+        pending.scan = Some(scan);
+        Ok(())
+    }
+
     pub fn plan_install(&self, ticket: &Ticket, catalog_name: &str) -> CmdResult<PlanView> {
         let (_, snap) = self.snapshot()?;
         Self::require_catalog(&snap)?;
@@ -840,23 +926,26 @@ impl Shell {
             _ => None,
         });
         let fixes = requirement_fixes(&plan.issues, &snap);
-        self.finish(
-            ticket,
-            Pending {
-                id: ticket.id,
-                paths: snap.paths.clone(),
-                target: catalog_name.to_string(),
-                plan: PendingPlan::Install {
-                    plan,
-                    root_catalog_name: catalog_name.to_string(),
-                },
-                fixes,
-                missing: Vec::new(),
-                game_version: snap.game_version.clone(),
-                unmanaged_target: false,
-                root_identity,
+        let (after, staged) = overlaps::apply_steps(&snap.states, &plan.steps);
+        let scan = self.scan_input(&snap, &after, staged);
+        let mut pending = Pending {
+            id: ticket.id,
+            paths: snap.paths.clone(),
+            target: catalog_name.to_string(),
+            plan: PendingPlan::Install {
+                plan,
+                root_catalog_name: catalog_name.to_string(),
             },
-        )
+            fixes,
+            missing: Vec::new(),
+            game_version: snap.game_version.clone(),
+            unmanaged_target: false,
+            root_identity,
+            scan: None,
+            overlaps: Vec::new(),
+        };
+        self.attach_overlaps(ticket, &mut pending, scan)?;
+        self.finish(ticket, pending)
     }
 
     pub fn plan_update(&self, ticket: &Ticket, folder: &str) -> CmdResult<PlanView> {
@@ -886,20 +975,22 @@ impl Shell {
             }
         })?;
         let fixes = requirement_fixes(&plan.issues, &snap);
-        self.finish(
-            ticket,
-            Pending {
-                id: ticket.id,
-                paths: snap.paths.clone(),
-                target: folder.to_string(),
-                plan: PendingPlan::Update { plan, step },
-                fixes,
-                missing: Vec::new(),
-                game_version: snap.game_version.clone(),
-                unmanaged_target: false,
-                root_identity: None,
-            },
-        )
+        let scan = self.update_scan_input(&snap, std::slice::from_ref(&plan));
+        let mut pending = Pending {
+            id: ticket.id,
+            paths: snap.paths.clone(),
+            target: folder.to_string(),
+            plan: PendingPlan::Update { plan, step },
+            fixes,
+            missing: Vec::new(),
+            game_version: snap.game_version.clone(),
+            unmanaged_target: false,
+            root_identity: None,
+            scan: None,
+            overlaps: Vec::new(),
+        };
+        self.attach_overlaps(ticket, &mut pending, scan)?;
+        self.finish(ticket, pending)
     }
 
     /// One combined plan over every plugin with `UpdateView::Available` (the "update all"
@@ -966,29 +1057,31 @@ impl Shell {
             }
         }
         let fixes = requirement_fixes(&issues, &snap);
-        self.finish(
-            ticket,
-            Pending {
-                id: ticket.id,
-                paths: snap.paths.clone(),
-                target: format!(
-                    "{} plugin{}",
-                    outdated.len(),
-                    if outdated.len() == 1 { "" } else { "s" }
-                ),
-                plan: PendingPlan::UpdateAll {
-                    plans,
-                    steps,
-                    issues,
-                    notes,
-                },
-                fixes,
-                missing: Vec::new(),
-                game_version: snap.game_version.clone(),
-                unmanaged_target: false,
-                root_identity: None,
+        let scan = self.update_scan_input(&snap, &plans);
+        let mut pending = Pending {
+            id: ticket.id,
+            paths: snap.paths.clone(),
+            target: format!(
+                "{} plugin{}",
+                outdated.len(),
+                if outdated.len() == 1 { "" } else { "s" }
+            ),
+            plan: PendingPlan::UpdateAll {
+                plans,
+                steps,
+                issues,
+                notes,
             },
-        )
+            fixes,
+            missing: Vec::new(),
+            game_version: snap.game_version.clone(),
+            unmanaged_target: false,
+            root_identity: None,
+            scan: None,
+            overlaps: Vec::new(),
+        };
+        self.attach_overlaps(ticket, &mut pending, scan)?;
+        self.finish(ticket, pending)
     }
 
     pub fn plan_enable(&self, ticket: &Ticket, identity: &str) -> CmdResult<PlanView> {
@@ -997,17 +1090,22 @@ impl Shell {
         let fetcher = self.plan_fetcher(ticket);
         let plan = manager::plan_enable(identity, &snap.plan_ctx(&fetcher));
         let fixes = requirement_fixes(&plan.issues, &snap);
-        self.finish(
+        let mut after = snap.states.clone();
+        after.insert(identity.to_string(), true);
+        for other in &plan.to_disable {
+            after.insert(other.clone(), false);
+        }
+        let scan = self.scan_input(&snap, &after, Vec::new());
+        let mut pending = simple_pending_with_root(
             ticket,
-            simple_pending_with_root(
-                ticket,
-                &snap,
-                identity,
-                PendingPlan::Enable(plan),
-                fixes,
-                Some(identity.to_string()),
-            ),
-        )
+            &snap,
+            identity,
+            PendingPlan::Enable(plan),
+            fixes,
+            Some(identity.to_string()),
+        );
+        self.attach_overlaps(ticket, &mut pending, scan)?;
+        self.finish(ticket, pending)
     }
 
     pub fn plan_disable(&self, ticket: &Ticket, identity: &str) -> CmdResult<PlanView> {
@@ -1057,6 +1155,7 @@ impl Shell {
         let (states, missing) = profiles::apply(profile, &identities, &snap.states);
         let (steps, issues, notes) = apply_profile_fields(&snap, &states);
         let fixes = requirement_fixes(&issues, &snap);
+        let scan = self.scan_input(&snap, &states, Vec::new());
         let mut pending = simple_pending(
             ticket,
             &snap,
@@ -1071,6 +1170,7 @@ impl Shell {
             fixes,
         );
         pending.missing = missing.iter().map(MissingView::from).collect();
+        self.attach_overlaps(ticket, &mut pending, scan)?;
         self.finish(ticket, pending)
     }
 
@@ -1105,6 +1205,13 @@ impl Shell {
                 (*steps, *issues, *notes) = apply_profile_fields(&snap, states);
             }
             _ => {}
+        }
+        // The fix switches `identity` off, so what it overrode no longer counts.
+        if let Some(scan) = &mut pending.scan {
+            scan.without(identity);
+            if let Ok(views) = scan.run(&AtomicBool::new(false)) {
+                pending.overlaps = views;
+            }
         }
         Ok(pending.view())
     }
@@ -1314,6 +1421,8 @@ fn simple_pending_with_root(
         game_version: snap.game_version.clone(),
         unmanaged_target: false,
         root_identity,
+        scan: None,
+        overlaps: Vec::new(),
     }
 }
 

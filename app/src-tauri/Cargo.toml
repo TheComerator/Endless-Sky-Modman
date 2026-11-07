@@ -35,3 +35,7 @@ tauri-plugin-process = "2"
 tauri = { version = "2", features = ["test"] }
 tempfile = "3.27.0"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+
+# One running copy only. Desktop-only: the plugin doesn't exist for mobile targets.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-single-instance = "2"

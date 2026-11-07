@@ -328,3 +328,18 @@ pub async fn update_active_profile(state: State<'_, AppState>) -> CmdResult<()> 
 pub async fn delete_profile(state: State<'_, AppState>, name: String) -> CmdResult<()> {
     blocking(&state, "delete_profile", move |s| s.delete_profile(&name)).await
 }
+
+// --- Settings --------------------------------------------------------------
+
+#[tauri::command]
+pub async fn get_overlap_scan(state: State<'_, AppState>) -> CmdResult<bool> {
+    blocking(&state, "get_overlap_scan", |s| Ok(s.overlap_scan())).await
+}
+
+#[tauri::command]
+pub async fn set_overlap_scan(state: State<'_, AppState>, enabled: bool) -> CmdResult<()> {
+    blocking(&state, "set_overlap_scan", move |s| {
+        s.set_overlap_scan(enabled)
+    })
+    .await
+}
