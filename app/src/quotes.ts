@@ -5,7 +5,10 @@
  * card. Each was chosen to read well on its own and to give nothing away about the story:
  * generic spaceport chatter, jokes and early-game scenes only. Wording is exactly the game's
  * (a leading in-game emotion tag such as "Irony." is dropped). Before adding one, check that it
- * isn't from a late-game or plot-twist scene.
+ * isn't from a late-game or plot-twist scene, and that neither the line nor its credit names a
+ * species, faction or region a new player hasn't met yet (the test file keeps a list of those
+ * names and fails if one slips in). A player pointed out in v0.3.1 that many of the first
+ * choices did exactly that; they were removed in v0.3.2.
  */
 export interface Quote {
   text: string;
@@ -19,28 +22,12 @@ export const QUOTES: readonly Quote[] = [
     credit: "Veronica Oxygenpocket, shipyard designer",
   },
   {
-    text: "Don't you worry! Why, that Ice-Crawler is the safest place in all of Nifel! Those other accidents were flukes, and what happened to her sister Ice-Crawler, Gudrun, was entirely unforeseeable.",
-    credit: "a tour saleswoman on Nifel",
-  },
-  {
-    text: "You may die, or maybe not. Signals vork strange here at times. Good luck and remember. No refund.",
-    credit: "Hjlod, Skadenga tour guide",
-  },
-  {
-    text: "Stopped using vaccines on longcows, long ago we did. Remember which leg to apply them on, we never could.",
-    credit: "a longcow rancher",
-  },
-  {
     text: "You die almost instantly, but you do have a few microseconds to reflect on the wisdom of mocking a man that is trying to fire a gun at you.",
     credit: "narration",
   },
   {
     text: "We learned years ago that we need to end every concert with a sad song. Otherwise the fans leave with way too much energy and start destroying public property.",
     credit: "Becca, band stage manager",
-  },
-  {
-    text: "It's not actually haunted, of course. Those are just stories. Do you think I'd send an entire film crew and all their expensive equipment to a place that was actually dangerous?",
-    credit: "Likeet, Hai film director",
   },
   {
     text: "Someone with more money than sense asked me to refill the hyperspace relays, because their signal was low.",
@@ -55,32 +42,8 @@ export const QUOTES: readonly Quote[] = [
     credit: "a painter",
   },
   {
-    text: "The only reason every freighter isn't automated these days is piracy. Thank you, pirates!",
-    credit: "an Avgi merchant",
-  },
-  {
-    text: "Nonsense, this formula is perfectly safe! A serum for the health, proven to kill over three thousand forms of cancer, you should know.",
-    credit: "an Avgi snake-oil peddler",
-  },
-  {
     text: 'Someone met a djinn and said "leave me alone." That person is now stranded on an uninhabited planet.',
     credit: "a passing ship's hail",
-  },
-  {
-    text: "It is too late. Ice-Slug has you. Vhat you do now is die. Horribly.",
-    credit: "Hjlod, Skadenga tour guide",
-  },
-  {
-    text: "Difficult sometimes it is, to be a mediator. If careful with my words I am not, a Saryd might think an Arach talking about longcows has insulted their mother.",
-    credit: "a Heliarch agent",
-  },
-  {
-    text: "Travel to new places, I used to, but infinite, our planets are not, so seen them all by now I have.",
-    credit: "a local Saryd",
-  },
-  {
-    text: "Trying to be inconspicuous is admirable. Being oblivious to the fact that you stand out like a star in empty space is not.",
-    credit: "Taely, Remnant prefect",
   },
   {
     text: "It only costs 40 credits, but because you have done a horrible job at managing your finances you do not have even that much cash on hand right now.",
@@ -89,14 +52,6 @@ export const QUOTES: readonly Quote[] = [
   {
     text: "You could set off a nuke on the far side of that world and the miners would probably sleep right through it.",
     credit: "Mr. Eyes",
-  },
-  {
-    text: "You always see bright up-and-coming students claim to have invented a new kind of faster than light drive. Eighty years ago, one of them was actually right!",
-    credit: "an Avgi physicist",
-  },
-  {
-    text: "The galaxy is three-dimensional, but you wouldn't know it from the way everyone draws their maps!",
-    credit: "an Avgi astronomer",
   },
   {
     text: "He's got the Bloom. He'll be dead in a few weeks.",
@@ -111,20 +66,8 @@ export const QUOTES: readonly Quote[] = [
     credit: "a pet memorial message",
   },
   {
-    text: "Lucky you are, that under our jurisdiction this happened. Were it the Quarg's, stranded you would remain.",
-    credit: "a Saryd",
-  },
-  {
     text: "Yes, the team sent me some videos of the battle. First-rate carnage. I was very pleased.",
     credit: '"Barmy Edward", weapons engineer',
-  },
-  {
-    text: "To know is to lead, to study is to know, to serve is to study, to lead is to serve.",
-    credit: "a Hai academy inscription",
-  },
-  {
-    text: "Honesty is good. It is hard to learn when we are not willing to admit that we do not know something.",
-    credit: "Dawn, Remnant researcher",
   },
   {
     text: "Apparently the goat ate the cabbage, and shortly after that the wolf ate the goat.",
