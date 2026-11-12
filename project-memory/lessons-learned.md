@@ -6,7 +6,7 @@ Format: WHAT went wrong, WHY it went wrong, HOW to prevent it.
 
 ## Assumed the catalog's `version` field was stale (2026-10-01)
 
-**What went wrong:** CLAUDE.md stated the catalog `version` was author-reported at PR time and not live-tracked, so update checking would need per-plugin GitHub API polling. This was written into the design and repeated to Jon as a "reliability caveat."
+**What went wrong:** CLAUDE.md stated the catalog `version` was author-reported at PR time and not live-tracked, so update checking would need per-plugin GitHub API polling. This was written into the design and repeated to the owner as a "reliability caveat."
 
 **Why it went wrong:** Inferred from the manifest's shape (it looks hand-maintained) instead of checking the index repo itself. The repo's `.github/workflows/autoupdate.yml` runs hourly and auto-merges version bumps for 163 of 165 plugins.
 
