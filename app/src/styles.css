@@ -907,3 +907,76 @@ ul.plain li + li {
   font-weight: 500;
   color: var(--muted, #8b93a7);
 }
+
+/* --- About / start-up screen ------------------------------------------- */
+
+/* Above the plan dialog (z-index 10), in case one opens while the start-up screen is still up. */
+.splash-backdrop {
+  z-index: 20;
+  cursor: pointer;
+}
+
+/* 30% larger than the standard dialog: wider card, bigger text, bigger logo. */
+.about-card {
+  width: min(680px, calc(100vw - 32px));
+  font-size: 130%;
+  text-align: center;
+  padding: 36px 42px 28px;
+}
+
+.about-logo {
+  border-radius: 71px;
+  box-shadow: 0 10px 36px rgb(0 0 0 / 0.45);
+}
+
+.about-card h2 {
+  margin: 20px 0 6px;
+}
+
+.about-version {
+  margin: 0 0 10px;
+  font-weight: 600;
+}
+
+/* The logo is the star of the card; capped so it also fits a short window (the source art is 512px). */
+.about-logo {
+  max-width: 100%;
+  width: 380px;
+  height: auto;
+  max-height: 45vh;
+  aspect-ratio: 1;
+  object-fit: contain;
+}
+
+/* A line from the game's story, with who said it. */
+.about-quote {
+  margin: 18px 0 14px;
+  padding: 12px 18px;
+  border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--panel-2) 70%, transparent);
+  border-radius: 0 8px 8px 0;
+  text-align: left;
+}
+
+.about-quote blockquote {
+  margin: 0;
+  font-style: italic;
+  line-height: 1.4;
+}
+
+.about-quote figcaption {
+  margin-top: 6px;
+  text-align: right;
+  font-size: 85%;
+  color: var(--muted);
+}
+
+.about-credit {
+  margin: 8px 0 0;
+  font-size: 70%;
+}
+
+.about-license {
+  margin: 4px 0 0;
+  font-size: 85%;
+}

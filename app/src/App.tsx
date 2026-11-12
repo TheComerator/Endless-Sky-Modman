@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, asCmdError } from "./api";
 import type { ManagerState } from "./bindings/ManagerState";
 import type { MissingView } from "./bindings/MissingView";
+import { AboutCard } from "./components/AboutCard";
 import { PlanDialog } from "./components/PlanDialog";
 import { PluginIcon } from "./components/PluginIcon";
 import { Toasts } from "./components/Toasts";
@@ -19,7 +20,17 @@ import { KIND_LABEL, SettingsView } from "./views/SettingsView";
 
 type Tab = "installed" | "browse" | "profiles" | "settings";
 
-function TopBar({ manager, planFlow, notify }: { manager: Manager; planFlow: PlanFlow; notify: Notify }) {
+function TopBar({
+  manager,
+  planFlow,
+  notify,
+  onAbout,
+}: {
+  manager: Manager;
+  planFlow: PlanFlow;
+  notify: Notify;
+  onAbout: () => void;
+}) {
   const { state, game } = manager;
   const install = state?.install ?? null;
   const profiles = state?.profiles;
@@ -65,6 +76,9 @@ function TopBar({ manager, planFlow, notify }: { manager: Manager; planFlow: Pla
             </select>
           </label>
         )}
+        <button onClick={onAbout} title="Version, license and credits">
+          About
+        </button>
         <button
           className="primary launch"
           disabled={!install?.launch || running}
@@ -239,6 +253,9 @@ export default function App() {
   const planFlow = usePlanFlow(notify, onCommitted);
   const updater = useUpdater(notify);
   const [tab, setTab] = useState<Tab>("installed");
+  // The about card shows at start-up (until clicked), and the "About" button reopens it.
+  const [about, setAbout] = useState(true);
+  const closeAbout = useCallback(() => setAbout(false), []);
   const { state } = manager;
 
   // Always the latest phase, for a loop that waits on it from inside an async callback
@@ -272,7 +289,7 @@ export default function App() {
 
   return (
     <div className="app">
-      <TopBar manager={manager} planFlow={planFlow} notify={notify} />
+      <TopBar manager={manager} planFlow={planFlow} notify={notify} onAbout={() => setAbout(true)} />
       <div className="body">
         <nav className="sidebar">
           {tabs.map(([id, label, count]) => (
@@ -305,6 +322,7 @@ export default function App() {
         </main>
       </div>
       <PlanDialog planFlow={planFlow} />
+      {about && <AboutCard onClose={closeAbout} />}
       <Toasts toasts={toasts} dismiss={dismiss} />
     </div>
   );
