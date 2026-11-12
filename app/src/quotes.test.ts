@@ -15,6 +15,16 @@ describe("QUOTES", () => {
     expect(new Set(texts).size).toBe(texts.length);
   });
 
+  it("names no species, faction or region a new player hasn't met yet", () => {
+    // Later-game names. Add to this list whenever a new one turns up; the point is that a
+    // quote on the start-up card must never introduce them.
+    const lateGame =
+      /\b(Avgi|Hai|Saryd|Heliarch|Remnant|Arach|Kimek|Quarg|Coalition|Wanderers?|Pug|Korath|Drak|Successors?|Skadenga|Nifel|Archon|Builder|Sheragi|longcows?)\b/i;
+    for (const q of QUOTES) {
+      expect(`${q.text} ${q.credit}`).not.toMatch(lateGame);
+    }
+  });
+
   it("keeps the in-game emotion tags out", () => {
     for (const q of QUOTES) {
       expect(q.text).not.toMatch(/^(Irony|Dismissal|Frustration|Amusement|Humor|Anger)\./);
