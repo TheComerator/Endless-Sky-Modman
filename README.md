@@ -43,6 +43,8 @@ Import someone's shared profile and the manager lists the plugins you're missing
 - **Overlap warnings**: when you install, update or enable a plugin, or switch profile, the manager tells you if it would override another enabled plugin (for example both redefine the same ship), and which one wins. It is a heads-up only, never a block, and can be turned off in Settings.
 - **Conflict and dependency checks** before every change, in plain language. If two plugins conflict, it offers to disable one instead of just refusing.
 - **Finds your game** whether it's from Steam (including Steam as a Flatpak), a standalone install, an AppImage, or a custom folder, and launches it for you.
+- **One window at a time**: starting the manager a second time just brings the running window to the front.
+- **A start-up card** with the logo, your version number, a link to the license and a random line from the game's own story text, credited to the character who says it. It stays until you click or press Esc, and the **About** button in the top bar brings it back.
 
 It does **not** manage the game itself (versions, multiple builds). If you want that, see [ESLauncher2](#how-it-differs-from-eslauncher2).
 

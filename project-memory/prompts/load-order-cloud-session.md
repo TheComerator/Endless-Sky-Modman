@@ -6,7 +6,7 @@ Copy everything below the line into a new cloud session that has the repository
 ---
 
 You are working on **Endless Sky Mod Manager** (Tauri 2 + Rust + React/TypeScript), a desktop
-plugin manager for the game *Endless Sky*. The owner (Jon) is not an experienced developer:
+plugin manager for the game *Endless Sky*. The owner is not an experienced developer:
 explain decisions in plain language in commit messages and your final report, and say
 plainly when something is uncertain. Read `CLAUDE.md` at the repo root first (project rules,
 design decisions A to L, and the roadmap section). Follow it. Also read `README.md`.
@@ -17,7 +17,7 @@ Two deliverables, in this order.
 
 ### Deliverable 1: a feature request for the Endless Sky game (a document only)
 
-Write `docs/proposals/endless-sky-load-order-request.md`. It will be posted by Jon to the
+Write `docs/proposals/endless-sky-load-order-request.md`. It will be posted by the owner to the
 Endless Sky project himself (their RFC repository, `endless-sky/rfcs`, or an issue).
 **Do not post, open issues or PRs anywhere outside this repository.** Write it as a proposal
 a maintainer would want to read: short, concrete, respectful, no demands.
@@ -73,7 +73,7 @@ need privileges on Windows). Do not use them.
   Renaming a folder changes identity only for plugins *without* a `plugin.txt` name (7 of 37
   in the owner's set). In version 1, **leave those plugins out of ordering** and show why.
   **Do not write any file inside a plugin folder.** Writing a one-line `plugin.txt` for them
-  is a possible follow-up that needs Jon's explicit approval; document it as an open option,
+  is a possible follow-up that needs the owner's explicit approval; document it as an open option,
   do not implement it.
 - **Records.** Install records (`records.rs`) key on the folder name (decision A). Store the
   original folder name and the current prefixed name; installs, updates and uninstalls must
@@ -144,5 +144,5 @@ Follow the style of the existing views and the project's plain-language wording.
 2. How to try it, step by step, on a throwaway folder (not a real plugin set).
 3. What you could not verify and what assumptions remain (game-source claims especially).
 4. Anything you decided differently from this prompt, and why.
-5. The open questions for Jon (at minimum: whether to add a minimal `plugin.txt` to
+5. The open questions for the owner (at minimum: whether to add a minimal `plugin.txt` to
    plugins that lack a name so they can be ordered too).
