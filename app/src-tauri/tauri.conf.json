@@ -14,8 +14,9 @@
     "windows": [
       {
         "title": "Endless Sky Mod Manager",
-        "width": 1200,
-        "height": 800,
+        "center": true,
+        "width": 1320,
+        "height": 960,
         "minWidth": 960,
         "minHeight": 620
       }
