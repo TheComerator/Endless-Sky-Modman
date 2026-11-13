@@ -10,6 +10,12 @@ describe("QUOTES", () => {
     }
   });
 
+  it("keeps every quote short enough for the card", () => {
+    for (const q of QUOTES) {
+      expect(q.text.length).toBeLessThanOrEqual(220);
+    }
+  });
+
   it("has no repeated quote", () => {
     const texts = QUOTES.map((q) => q.text);
     expect(new Set(texts).size).toBe(texts.length);
@@ -19,7 +25,7 @@ describe("QUOTES", () => {
     // Later-game names. Add to this list whenever a new one turns up; the point is that a
     // quote on the start-up card must never introduce them.
     const lateGame =
-      /\b(Avgi|Hai|Saryd|Heliarch|Remnant|Arach|Kimek|Quarg|Coalition|Wanderers?|Pug|Korath|Drak|Successors?|Skadenga|Nifel|Archon|Builder|Sheragi|longcows?)\b/i;
+      /\b(Avgi|Hai|Saryd|Heliarch|Remnant|Arach|Kimek|Quarg|Coalition|Wanderers?|Pug|Korath|Drak|Successors?|Skadenga|Nifel|Archon|Builder|Sheragi|longcows?|Bloodsea|Bloom)\b/i;
     for (const q of QUOTES) {
       expect(`${q.text} ${q.credit}`).not.toMatch(lateGame);
     }
