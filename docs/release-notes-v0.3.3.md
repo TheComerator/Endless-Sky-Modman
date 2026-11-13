@@ -1,11 +1,12 @@
 # Endless Sky Mod Manager v0.3.3
 
-A spoiler clean-up for the start-up card's quotes, thanks to a player who pointed out that some of them gave away later parts of the game.
+Finishing the start-up card's spoiler clean-up that v0.3.2 started.
 
 ## What's changed
 
-- **Spoiler-free quotes.** Every quote on the start-up card was checked again, both for what it says and for where it appears in the game. Lines that name species, factions or places a new player hasn't met yet were removed, along with lines that only show up in a later campaign, a faction's own storyline or after a story event. The card now has 30 quotes from places any new player can find in human space: spaceport news chatter, hails from passing ships, the intro missions and ship and outfit descriptions.
-- **A guard against it happening again.** The app's tests now fail if a quote or its credit mentions one of a list of later-game names, or if a quote is too long for the card.
+- **Six more spoilers removed.** v0.3.2 removed the quotes that *named* later-game species and places. This time every remaining quote was also checked for *where* it appears in the game, and six turned out to come from later content: the Free Worlds campaign, a later Syndicate storyline, the Bloodsea story events and files for regions outside human space. They're gone.
+- **Back to 30 quotes.** 21 new lines were added, all from places any new player can find in human space: spaceport news chatter, hails from passing ships, the intro missions and ship and outfit descriptions. Each was checked word for word against the game's own files.
+- **A stronger guard.** The app's tests now also block "Bloodsea" and "Bloom", and fail if a quote is too long for the card.
 
 ## Download
 
